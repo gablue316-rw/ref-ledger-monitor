@@ -718,7 +718,7 @@
             dialog.showModal();
             button.disabled = true;
             try {
-              const response = await fetch("/api/about", {
+              const response = await fetch("api/about", {
                 credentials: "same-origin", cache: "no-store",
                 headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8000)
               });
@@ -733,7 +733,7 @@
             }
           };
           $("rl-user-select").onchange = render;
-          // GET /api/metrics/last-minute returns collection counters for the last
+          // GET api/metrics/last-minute returns collection counters for the last
           // completed UTC minute, and current users with unexpired sessions.
           // User IDs display tenantId; updated is labeled Changed.
           // HTTP counters are null until Ref Ledger records HTTP telemetry.
@@ -781,7 +781,7 @@
             if (busy) return;
             busy = true;
             try {
-              const response = await fetch("/api/metrics/last-minute", {
+              const response = await fetch("api/metrics/last-minute", {
                 credentials: "same-origin",
                 cache: "no-store",
                 headers: { Accept: "application/json" },
