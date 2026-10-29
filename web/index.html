@@ -1,0 +1,848 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ref Ledger Monitor</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        color-scheme: light dark;
+        background: light-dark(#f2f5f9, #101720);
+      }
+      #rl-monitor {
+        max-width: 1600px;
+        margin: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="rl-monitor">
+      <style>
+        #rl-monitor {
+          color-scheme: light dark;
+          --bg: light-dark(#f2f5f9, #101720);
+          --panel: light-dark(#ffffff, #192330);
+          --ink: light-dark(#192d43, #ecf3fb);
+          --muted: light-dark(#56697d, #aabacc);
+          --line: light-dark(#dde5ee, #334155);
+          --add: light-dark(#168044, #66d997);
+          --change: light-dark(#2563c6, #79adff);
+          --delete: light-dark(#9e6609, #efba55);
+          --error: light-dark(#c52f3b, #ff8590);
+          --traffic: light-dark(#6650bb, #b5a0ff);
+          font:
+            14px system-ui,
+            sans-serif;
+          background: var(--bg);
+          color: var(--ink);
+          padding: 26px;
+          border-radius: 12px;
+        }
+        #rl-monitor * {
+          box-sizing: border-box;
+        }
+        #rl-monitor header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 20px;
+          flex-wrap: wrap;
+          border-bottom: 1px solid var(--line);
+          padding-bottom: 20px;
+        }
+        #rl-monitor h1 {
+          font-size: 27px;
+          margin: 6px 0;
+        }
+        #rl-monitor h2 {
+          font-size: 16px;
+          font-weight: 600;
+          margin: 0;
+        }
+        #rl-monitor .eyebrow {
+          font-size: 11px;
+          letter-spacing: 0.13em;
+          font-weight: 700;
+          color: var(--muted);
+        }
+        #rl-monitor .sub {
+          font-size: 12px;
+          color: var(--muted);
+          margin: 6px 0 0;
+        }
+        #rl-monitor .badge {
+          padding: 7px 12px;
+          border-radius: 24px;
+          background: light-dark(#fff0cf, #4b3c20);
+          color: light-dark(#805500, #f5cb7c);
+          font-size: 12px;
+        }
+        #rl-monitor .panel {
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          padding: 18px;
+          min-width: 0;
+        }
+        #rl-monitor .overview {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1.2fr;
+          gap: 16px;
+          margin-top: 20px;
+          align-items: stretch;
+        }
+        #rl-monitor .stat {
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          gap: 10px;
+        }
+        #rl-monitor .stat-number {
+          font-size: 42px;
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+          letter-spacing: -1px;
+        }
+        #rl-monitor .stat-label {
+          color: var(--muted);
+          font-size: 13px;
+        }
+        #rl-monitor .active-panel {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+        }
+        #rl-monitor .active-panel .meter {
+          width: 150px;
+          max-width: 55%;
+        }
+        #rl-monitor .toolbar {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin: 24px 0 14px;
+        }
+        #rl-monitor select,
+        #rl-monitor input {
+          font: inherit;
+          font-size: 16px;
+          background: var(--panel);
+          color: var(--ink);
+          border: 1px solid var(--line);
+          border-radius: 7px;
+          padding: 9px;
+          max-width: 100%;
+          min-width: 0;
+        }
+        #rl-monitor select {
+          max-width: 330px;
+        }
+        #rl-monitor input {
+          width: 72px;
+        }
+        #rl-monitor .scope {
+          font-size: 12px;
+          color: var(--muted);
+          overflow-wrap: anywhere;
+        }
+        #rl-monitor .window {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          flex-wrap: wrap;
+          font-size: 12px;
+          color: var(--muted);
+          margin-bottom: 15px;
+        }
+        #rl-monitor .traffic-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+          margin-bottom: 24px;
+        }
+        #rl-monitor .traffic-panel {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 20px;
+        }
+        #rl-monitor .traffic-panel .meter {
+          width: 210px;
+          max-width: 52%;
+        }
+        #rl-monitor .traffic-panel .reading {
+          font-size: 25px;
+        }
+        #rl-monitor .section-title {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin: 0 0 14px;
+        }
+        #rl-monitor .legend {
+          display: flex;
+          gap: 14px;
+          flex-wrap: wrap;
+          font-size: 12px;
+        }
+        #rl-monitor .added {
+          color: var(--add);
+        }
+        #rl-monitor .updated {
+          color: var(--change);
+        }
+        #rl-monitor .deleted {
+          color: var(--delete);
+        }
+        #rl-monitor .errors {
+          color: var(--error);
+        }
+        #rl-monitor .collection-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 16px;
+        }
+        #rl-monitor .collection-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          margin-bottom: 14px;
+        }
+        #rl-monitor .collection-head span {
+          font-size: 11px;
+          color: var(--muted);
+        }
+        #rl-monitor .four-gauges {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 12px;
+        }
+        #rl-monitor .meter {
+          text-align: center;
+          min-width: 0;
+        }
+        #rl-monitor .meter svg {
+          width: 100%;
+          display: block;
+          overflow: visible;
+        }
+        #rl-monitor .meter-label {
+          font-size: 12px;
+          font-weight: 600;
+          margin-bottom: 4px;
+        }
+        #rl-monitor .reading {
+          font-size: 21px;
+          font-weight: 700;
+          line-height: 1.3;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        #rl-monitor .scale {
+          display: flex;
+          justify-content: space-between;
+          color: var(--muted);
+          font-size: 11px;
+          margin: 0 0 5px;
+        }
+        #rl-monitor .meter-unit {
+          font-size: 11px;
+          color: var(--muted);
+        }
+        #rl-monitor .users-panel {
+          margin-top: 24px;
+        }
+        #rl-monitor .table-wrap {
+          overflow-x: auto;
+          margin-top: 16px;
+        }
+        #rl-monitor table {
+          width: 100%;
+          min-width: 1150px;
+          border-collapse: collapse;
+          font-size: 12px;
+        }
+        #rl-monitor caption {
+          text-align: left;
+          color: var(--muted);
+          padding: 0 0 12px;
+        }
+        #rl-monitor th,
+        #rl-monitor td {
+          padding: 13px 10px;
+          text-align: right;
+          border-bottom: 1px solid var(--line);
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        #rl-monitor th:first-child,
+        #rl-monitor td:first-child {
+          text-align: left;
+        }
+        #rl-monitor thead th {
+          font-size: 12px;
+          color: var(--muted);
+          font-weight: 600;
+        }
+        #rl-monitor tbody th {
+          font-family: ui-monospace, monospace;
+          font-size: 12px;
+          font-weight: 400;
+        }
+        #rl-monitor .quad {
+          display: inline-flex;
+          gap: 0;
+          font-weight: 600;
+        }
+        #rl-monitor .quad span {
+          text-align: right;
+        }
+        #rl-monitor tfoot th,
+        #rl-monitor tfoot td {
+          font-weight: 700;
+          border-bottom: 0;
+        }
+        #rl-monitor .footer {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          flex-wrap: wrap;
+          margin-top: 16px;
+          color: var(--muted);
+          font-size: 12px;
+        }
+        #rl-monitor #rl-message {
+          overflow-wrap: anywhere;
+        }
+        #rl-monitor .invalid {
+          color: var(--error);
+        }
+        @media (max-width: 700px) {
+          #rl-monitor {
+            padding: 16px;
+          }
+          #rl-monitor .overview {
+            grid-template-columns: 1fr 1fr;
+          }
+          #rl-monitor .active-panel {
+            grid-column: 1/-1;
+          }
+          #rl-monitor .collection-grid {
+            grid-template-columns: 1fr;
+          }
+          #rl-monitor .traffic-row {
+            grid-template-columns: 1fr;
+          }
+          #rl-monitor .four-gauges {
+            gap: 8px;
+          }
+          #rl-monitor .reading {
+            font-size: 19px;
+          }
+          #rl-monitor .stat-number {
+            font-size: 34px;
+          }
+        }
+        @media (max-width: 380px) {
+          #rl-monitor .panel {
+            padding: 12px;
+          }
+          #rl-monitor .four-gauges {
+            gap: 6px;
+          }
+          #rl-monitor .meter-label {
+            font-size: 11px;
+          }
+          #rl-monitor .reading {
+            font-size: 17px;
+          }
+        }
+        #rl-monitor .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        #rl-monitor .monitor-button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); padding: 9px 16px; border-radius: 7px; cursor: pointer; }
+        #rl-monitor .monitor-button:focus-visible { outline: 2px solid var(--change); outline-offset: 3px; }
+        #rl-monitor dialog { color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; width: 380px; max-width: calc(100% - 32px); }
+        #rl-monitor dialog::backdrop { background: rgb(0 0 0 / 45%); }
+        #rl-monitor dialog p { margin: 20px 0; overflow-wrap: anywhere; }
+        #rl-monitor dialog form { display: flex; justify-content: flex-end; }
+      </style>
+      <header>
+        <div>
+          <div class="eyebrow">REF LEDGER / MONITOR</div>
+          <h1>Activity overview</h1>
+          <p class="sub">Users, HTTP traffic, and collection activity</p>
+        </div>
+        <div class="header-actions">
+          <span id="rl-mode" class="badge">Connecting…</span>
+          <button type="button" id="rl-about-open" class="monitor-button">About</button>
+        </div>
+      </header>
+      <dialog id="rl-about-dialog" aria-labelledby="rl-about-title">
+        <h2 id="rl-about-title">About Ref Ledger Monitor</h2>
+        <p id="rl-about-status" role="status" aria-live="polite">Loading version…</p>
+        <form method="dialog"><button class="monitor-button" type="submit">Close</button></form>
+      </dialog>
+      <section class="overview" aria-label="All-user activity summary">
+        <div class="panel stat">
+          <div class="stat-label">Total users</div>
+          <div id="rl-total-users" class="stat-number">—</div>
+          <div class="sub">Across all users</div>
+        </div>
+        <div class="panel stat">
+          <div class="stat-label">Active users</div>
+          <div id="rl-active-users" class="stat-number">—</div>
+          <div class="sub">With an unexpired sign-in session now</div>
+        </div>
+        <div class="panel active-panel">
+          <div>
+            <h2>Active users</h2>
+            <p class="sub">Percentage of all users</p>
+          </div>
+          <div id="rl-active-gauge" class="meter"></div>
+        </div>
+      </section>
+      <div class="toolbar">
+        <label for="rl-user-select">User</label
+        ><select id="rl-user-select">
+          <option value="">All users</option></select
+        ><label for="rl-refresh">Refresh every</label
+        ><input
+          id="rl-refresh"
+          type="number"
+          min="1"
+          max="59"
+          step="1"
+          value="5"
+          aria-describedby="rl-refresh-help"
+        /><span id="rl-refresh-help" class="sub">seconds (1–59)</span>
+      </div>
+      <div class="window">
+        <span id="rl-scope">All users · Current minute</span
+        ><span id="rl-window">Waiting for the first response</span>
+      </div>
+      <section class="traffic-row" aria-label="HTTP traffic">
+        <div class="panel traffic-panel">
+          <div>
+            <h2>HTTP bytes in</h2>
+            <p class="sub">Received by the server</p>
+            <p class="sub" id="rl-in-exact"></p>
+          </div>
+          <div class="meter" id="rl-http-in"></div>
+        </div>
+        <div class="panel traffic-panel">
+          <div>
+            <h2>HTTP bytes out</h2>
+            <p class="sub">Sent by the server</p>
+            <p class="sub" id="rl-out-exact"></p>
+          </div>
+          <div class="meter" id="rl-http-out"></div>
+        </div>
+      </section>
+      <div class="section-title">
+        <h2>Collection activity</h2>
+        <div class="legend">
+          <span class="added">A · Adds</span><span class="updated">C · Changed</span
+          ><span class="deleted">D · Deletes</span><span class="errors">E · Errors</span>
+        </div>
+      </div>
+      <div id="rl-collections" class="collection-grid"></div>
+      <section class="panel users-panel">
+        <div class="section-title">
+          <h2>Activity by user</h2>
+          <span class="sub">Collection counts: Adds / Changed / Deletes / Errors</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption>
+              Current minute · HTTP values shown in exact bytes
+            </caption>
+            <thead id="rl-table-head"></thead>
+            <tbody id="rl-user-rows"></tbody>
+            <tfoot id="rl-user-total"></tfoot>
+          </table>
+        </div>
+      </section>
+      <div class="footer">
+        <span id="rl-message" role="status" aria-live="polite">Waiting for live data…</span
+        ><span id="rl-updated">HTTP counters not recorded yet</span>
+      </div>
+      <script>
+        (() => {
+          const root = document.getElementById("rl-monitor"),
+            $ = (id) => root.querySelector("#" + id);
+          const collections = [
+            "associations",
+            "expenses",
+            "games",
+            "levels",
+            "officials",
+            "payments",
+            "sites",
+          ];
+          const measures = [
+            ["added", "Adds", "A"],
+            ["updated", "Changed", "C"],
+            ["deleted", "Deletes", "D"],
+            ["errors", "Errors", "E"],
+          ];
+          const fmt = new Intl.NumberFormat();
+          let latest = null,
+            refreshSeconds = 5,
+            timer = null,
+            busy = false;
+          const title = (s) => s[0].toUpperCase() + s.slice(1);
+          const empty = () => ({ added: 0, updated: 0, deleted: 0, errors: 0 });
+          function compact(n) {
+            return n >= 1e9
+              ? (n / 1e9).toFixed(1) + "G"
+              : n >= 1e6
+                ? (n / 1e6).toFixed(1) + "M"
+                : n >= 1000
+                  ? (n / 1000).toFixed(1) + "k"
+                  : fmt.format(n);
+          }
+          function bytes(n) {
+            return n >= 1e9
+              ? (n / 1e9).toFixed(2) + " GB"
+              : n >= 1e6
+                ? (n / 1e6).toFixed(2) + " MB"
+                : n >= 1000
+                  ? (n / 1000).toFixed(2) + " kB"
+                  : n + " B";
+          }
+          function ceiling(n) {
+            const v = Math.max(10, n * 1.2),
+              p = 10 ** Math.floor(Math.log10(v));
+            return [1, 2, 5, 10].map((x) => x * p).find((x) => x >= v);
+          }
+          function gauge(
+            host,
+            label,
+            value,
+            color,
+            unit,
+            max = ceiling(value),
+            display = fmt.format(value),
+            scaleFormat = compact,
+          ) {
+            if (value === null) {
+              host.innerHTML =
+                '<svg viewBox="0 0 180 96" role="img" aria-label="Data unavailable"><path d="M26 82 A64 64 0 0 1 154 82" fill="none" stroke="var(--line)" stroke-width="9"/></svg><div class="reading">N/A</div><div class="meter-unit">Not recorded yet</div>';
+              return;
+            }
+            const fraction = Math.max(0, Math.min(1, value / max)),
+              r = 64,
+              cx = 90,
+              cy = 82;
+            let ticks = "";
+            for (let i = 0; i <= 4; i++) {
+              const a = Math.PI * (1 - i / 4);
+              ticks += `<line x1="${cx + Math.cos(a) * 52}" y1="${cy - Math.sin(a) * 52}" x2="${cx + Math.cos(a) * 57}" y2="${cy - Math.sin(a) * 57}" stroke="var(--muted)"/>`;
+            }
+            host.innerHTML = `${label ? `<div class="meter-label" style="color:${color}">${label}</div>` : ""}<svg viewBox="0 0 180 96" role="img" aria-label="${label || unit}: ${display}. Scale 0 to ${scaleFormat(max)}."><path d="M26 82 A64 64 0 0 1 154 82" fill="none" stroke="var(--line)" stroke-width="9"/><path d="M26 82 A64 64 0 0 1 154 82" fill="none" stroke="${color}" stroke-width="9" pathLength="100" stroke-dasharray="${fraction * 100} 100"/>${ticks}<g transform="rotate(${fraction * 180},90,82)"><path d="M33 82 L90 79 L99 82 L90 85 Z" fill="${color}"/></g><circle cx="90" cy="82" r="6" fill="var(--ink)"/></svg><div class="scale"><span>0</span><span>${scaleFormat(max)}</span></div><div class="reading" style="color:${color}">${display}</div><div class="meter-unit">${unit}</div>`;
+          }
+          function aggregate(users) {
+            const result = {
+              httpBytesIn: latest.httpAvailable ? 0 : null,
+              httpBytesOut: latest.httpAvailable ? 0 : null,
+              collections: Object.fromEntries(collections.map((c) => [c, empty()])),
+            };
+            for (const u of users) {
+              for (const key of ["httpBytesIn", "httpBytesOut"]) {
+                result[key] = result[key] === null || u[key] === null ? null : result[key] + u[key];
+              }
+              for (const c of collections)
+                for (const [k] of measures) result.collections[c][k] += u.collections[c][k];
+            }
+            return result;
+          }
+          function accept(data) {
+            latest = data;
+            const picker = $("rl-user-select"),
+              selected = picker.value;
+            const all = document.createElement("option");
+            all.value = "";
+            all.textContent = "All users";
+            picker.replaceChildren(all);
+            for (const u of data.users) {
+              const option = document.createElement("option");
+              option.value = u.tenantId;
+              option.textContent = u.tenantId;
+              picker.append(option);
+            }
+            picker.value = data.users.some((u) => u.tenantId === selected) ? selected : "";
+            $("rl-total-users").textContent = fmt.format(data.totalUsers);
+            $("rl-active-users").textContent = fmt.format(data.activeUsers);
+            const percent = data.totalUsers ? (100 * data.activeUsers) / data.totalUsers : 0;
+            gauge(
+              $("rl-active-gauge"),
+              "",
+              percent,
+              "var(--add)",
+              "active users",
+              100,
+              percent.toFixed(1) + "%",
+              (n) => n + "%",
+            );
+            render();
+          }
+          function quad(counts) {
+            const cell = document.createElement("td"),
+              group = document.createElement("div");
+            group.className = "quad";
+            for (const [key, label] of measures) {
+              if (group.children.length) {
+                const slash = document.createElement("span");
+                slash.textContent = "/";
+                slash.setAttribute("aria-hidden", "true");
+                group.append(slash);
+              }
+              const span = document.createElement("span");
+              span.className = key;
+              span.textContent = fmt.format(counts[key]);
+              span.setAttribute("aria-label", label + ": " + counts[key]);
+              group.append(span);
+            }
+            cell.append(group);
+            return cell;
+          }
+          function tableRow(user, isTotal = false) {
+            const row = document.createElement("tr"),
+              id = document.createElement("th");
+            id.scope = "row";
+            id.textContent = isTotal
+              ? $("rl-user-select").value
+                ? "Selected user total"
+                : "All users"
+              : user.tenantId;
+            row.append(id);
+            for (const key of ["httpBytesIn", "httpBytesOut"]) {
+              const cell = document.createElement("td");
+              cell.textContent = user[key] === null ? "N/A" : fmt.format(user[key]);
+              row.append(cell);
+            }
+            for (const c of collections) row.append(quad(user.collections[c]));
+            return row;
+          }
+          function render() {
+            if (!latest) return;
+            const selected = $("rl-user-select").value,
+              users = selected ? latest.users.filter((u) => u.tenantId === selected) : latest.users,
+              total = aggregate(users);
+            $("rl-scope").textContent =
+              (selected ? "User " + selected : "All users") + " · Current minute";
+            gauge(
+              $("rl-http-in"),
+              "",
+              total.httpBytesIn,
+              "var(--change)",
+              "bytes / minute",
+              undefined,
+              bytes(total.httpBytesIn),
+              bytes,
+            );
+            gauge(
+              $("rl-http-out"),
+              "",
+              total.httpBytesOut,
+              "var(--traffic)",
+              "bytes / minute",
+              undefined,
+              bytes(total.httpBytesOut),
+              bytes,
+            );
+            $("rl-in-exact").textContent =
+              total.httpBytesIn === null
+                ? "Not recorded yet"
+                : fmt.format(total.httpBytesIn) + " bytes / minute";
+            $("rl-out-exact").textContent =
+              total.httpBytesOut === null
+                ? "Not recorded yet"
+                : fmt.format(total.httpBytesOut) + " bytes / minute";
+            $("rl-collections").replaceChildren();
+            for (const c of collections) {
+              const panel = document.createElement("section");
+              panel.className = "panel";
+              panel.setAttribute("aria-label", title(c) + " activity");
+              panel.innerHTML = `<div class="collection-head"><h2>${title(c)}</h2><span>LAST MINUTE</span></div>`;
+              const row = document.createElement("div");
+              row.className = "four-gauges";
+              for (const [key, label] of measures) {
+                const meter = document.createElement("div");
+                meter.className = "meter";
+                gauge(
+                  meter,
+                  label,
+                  total.collections[c][key],
+                  `var(--${key === "added" ? "add" : key === "updated" ? "change" : key === "deleted" ? "delete" : "error"})`,
+                  "/ minute",
+                );
+                row.append(meter);
+              }
+              panel.append(row);
+              $("rl-collections").append(panel);
+            }
+            const head = document.createElement("tr");
+            for (const text of [
+              "User ID",
+              "HTTP Bytes In",
+              "HTTP Bytes Out",
+              ...collections.map(title),
+            ]) {
+              const th = document.createElement("th");
+              th.scope = "col";
+              th.textContent = text;
+              head.append(th);
+            }
+            $("rl-table-head").replaceChildren(head);
+            $("rl-user-rows").replaceChildren(...users.map((u) => tableRow(u)));
+            if (!users.length) {
+              const tr = document.createElement("tr"),
+                td = document.createElement("td");
+              td.colSpan = 10;
+              td.textContent = "No users to display.";
+              tr.append(td);
+              $("rl-user-rows").append(tr);
+            }
+            $("rl-user-total").replaceChildren(tableRow(total, true));
+          }
+          $("rl-about-open").onclick = async () => {
+            const button = $("rl-about-open"), dialog = $("rl-about-dialog"), status = $("rl-about-status");
+            status.textContent = "Loading version…";
+            dialog.showModal();
+            button.disabled = true;
+            try {
+              const response = await fetch("/api/about", {
+                credentials: "same-origin", cache: "no-store",
+                headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8000)
+              });
+              if (!response.ok) throw new Error("HTTP " + response.status);
+              const data = await response.json();
+              if (typeof data.version !== "string" || data.version.trim() === "") throw new Error("Invalid version response");
+              status.textContent = "Version: " + data.version;
+            } catch (error) {
+              status.textContent = "Unable to load the version (" + error.message + "). Close and reopen to retry.";
+            } finally {
+              button.disabled = false;
+            }
+          };
+          $("rl-user-select").onchange = render;
+          // GET /api/metrics/last-minute returns collection counters for the last
+          // completed UTC minute, and current users with unexpired sessions.
+          // User IDs display tenantId; updated is labeled Changed.
+          // HTTP counters are null until Ref Ledger records HTTP telemetry.
+          // There is no automatic demo-data fallback on this live page.
+          function validate(data) {
+            const count = (n) => Number.isSafeInteger(n) && n >= 0;
+            if (
+              !data ||
+              !Array.isArray(data.users) ||
+              !count(data.totalUsers) ||
+              !count(data.activeUsers) ||
+              typeof data.httpAvailable !== "boolean"
+            )
+              throw Error("Invalid user summary");
+            if (
+              !data.users.every(
+                (u) =>
+                  u &&
+                  typeof u.tenantId === "string" &&
+                  u.tenantId &&
+                  typeof u.active === "boolean" &&
+                  (u.httpBytesIn === null || count(u.httpBytesIn)) &&
+                  (u.httpBytesOut === null || count(u.httpBytesOut)) &&
+                  collections.every(
+                    (c) =>
+                      u.collections?.[c] && measures.every(([k]) => count(u.collections[c][k])),
+                  ),
+              )
+            )
+              throw Error("Invalid user metrics");
+            if (
+              (data.httpAvailable === false &&
+                data.users.some((u) => u.httpBytesIn !== null || u.httpBytesOut !== null)) ||
+              new Set(data.users.map((u) => u.tenantId)).size !== data.users.length ||
+              data.totalUsers !== data.users.length ||
+              data.activeUsers !== data.users.filter((u) => u.active).length
+            )
+              throw Error("User totals do not match");
+            const start = new Date(data.windowStart),
+              end = new Date(data.windowEnd);
+            if (!Number.isFinite(start.getTime()) || end - start !== 60000)
+              throw Error("Invalid minute window");
+          }
+          async function poll() {
+            if (busy) return;
+            busy = true;
+            try {
+              const response = await fetch("/api/metrics/last-minute", {
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: { Accept: "application/json" },
+                signal: AbortSignal.timeout(8000),
+              });
+              if (!response.ok) throw Error("HTTP " + response.status);
+              const data = await response.json();
+              validate(data);
+              accept(data);
+              $("rl-mode").textContent = "Live · every " + refreshSeconds + "s";
+              $("rl-message").classList.remove("invalid");
+              $("rl-message").textContent =
+                "Connected · Active = unexpired sign-in sessions; HTTP bytes are not recorded yet";
+              $("rl-window").textContent =
+                new Date(data.windowStart).toLocaleTimeString() +
+                " – " +
+                new Date(data.windowEnd).toLocaleTimeString() +
+                " (local time)";
+              $("rl-updated").textContent = "Updated " + new Date().toLocaleTimeString();
+            } catch (error) {
+              $("rl-mode").textContent = "Disconnected";
+              $("rl-message").classList.add("invalid");
+              $("rl-message").textContent =
+                "API unavailable (" +
+                error.message +
+                "). Showing " +
+                ($("rl-updated").textContent.startsWith("Updated")
+                  ? "stale data."
+                  : "no live data has been received.");
+            } finally {
+              busy = false;
+            }
+          }
+          function schedule() {
+            clearInterval(timer);
+            timer = setInterval(poll, refreshSeconds * 1000);
+          }
+          $("rl-refresh").onchange = () => {
+            const field = $("rl-refresh"),
+              value = Number(field.value);
+            if (!Number.isInteger(value) || value < 1 || value > 59) {
+              field.setCustomValidity("Enter a whole number between 1 and 59 seconds.");
+              field.reportValidity();
+              field.value = String(refreshSeconds);
+              field.setCustomValidity("");
+              return;
+            }
+            refreshSeconds = value;
+            field.setCustomValidity("");
+            schedule();
+            if ($("rl-mode").textContent.startsWith("Live"))
+              $("rl-mode").textContent = "Live · every " + refreshSeconds + "s";
+          };
+          gauge($("rl-http-in"), "", null, "var(--change)", "bytes / minute");
+          gauge($("rl-http-out"), "", null, "var(--traffic)", "bytes / minute");
+          gauge($("rl-active-gauge"), "", null, "var(--add)", "active users");
+          $("rl-mode").textContent = "Connecting…";
+          schedule();
+          poll();
+        })();
+      </script>
+    </div>
+  </body>
+</html>

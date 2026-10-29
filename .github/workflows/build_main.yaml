@@ -1,0 +1,65 @@
+name: Build and Push ref-ledger-monitor Main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ref-ledger-monitor-main-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        shell: bash
+        run: |
+          MAJOR=1
+
+          echo "IMAGE_TAG=v${MAJOR}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "ROLLING_TAG=latest" >> "$GITHUB_ENV"
+
+      - name: Display build information
+        shell: bash
+        run: |
+          echo "Branch: $GITHUB_REF_NAME"
+          echo "Version tag: $IMAGE_TAG"
+          echo "Rolling tag: $ROLLING_TAG"
+          echo "Image: gablue316/ref-ledger-monitor"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            gablue316/ref-ledger-monitor:${{ env.ROLLING_TAG }}
+            gablue316/ref-ledger-monitor:${{ env.IMAGE_TAG }}
+          labels: |
+            org.opencontainers.image.version=${{ env.IMAGE_TAG }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
