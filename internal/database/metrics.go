@@ -7,22 +7,16 @@ import (
 	"time"
 
 	"github.com/gablue316/ref-ledger-monitor/internal/model"
-
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// MetricsStore reads the same database that Ref Ledger writes. It never writes
-// records or creates indexes. Grant read access to users, sessions and metrics.
-type MetricsStore struct {
-	DB *mongo.Database
-}
-
+type MetricsStore struct{ DB *mongo.Database }
 type userDocument struct {
 	TenantID string `bson:"tenantId"`
+	Username string `bson:"username"`
 }
-
 type metricGroup struct {
 	ID struct {
 		TenantID   string `bson:"tenantId"`
@@ -30,136 +24,152 @@ type metricGroup struct {
 	} `bson:"_id"`
 	model.Counts `bson:",inline"`
 }
+type httpMetricGroup struct {
+	TenantID string `bson:"_id"`
+	BytesIn  int64  `bson:"bytesIn"`
+	BytesOut int64  `bson:"bytesOut"`
+	Requests int64  `bson:"requests"`
+}
 
 func (s *MetricsStore) LastMinute(ctx context.Context, now time.Time) (model.LastMinuteResponse, error) {
 	if s.DB == nil {
 		return model.LastMinuteResponse{}, fmt.Errorf("monitor database is not initialized")
 	}
-
 	now = now.UTC()
 	start, end := minuteWindow(now)
-
-	// Only retrieve the identity needed by the dashboard, never password hashes.
-	cursor, err := s.DB.Collection("users").Find(ctx, bson.D{},
-		options.Find().SetProjection(bson.D{
-			{Key: "_id", Value: 0}, {Key: "tenantId", Value: 1},
-		}))
+	cursor, err := s.DB.Collection("users").Find(ctx, bson.D{}, options.Find().SetProjection(bson.D{
+		{Key: "_id", Value: 0},
+		{Key: "tenantId", Value: 1},
+		{Key: "username", Value: 1},
+	}))
 	if err != nil {
 		return model.LastMinuteResponse{}, fmt.Errorf("read users: %w", err)
 	}
 	var users []userDocument
-	if err := cursor.All(ctx, &users); err != nil {
+	if err = cursor.All(ctx, &users); err != nil {
 		return model.LastMinuteResponse{}, fmt.Errorf("decode users: %w", err)
 	}
-
-	// TTL deletion is asynchronous. Explicitly exclude expired sessions.
-	// Distinct counts a user once even when signed in on multiple devices.
-	activeIDs, err := s.DB.Collection("sessions").Distinct(ctx, "tenantId", bson.D{
-		{Key: "expiresAt", Value: bson.D{{Key: "$gt", Value: now}}},
-	})
+	activeIDs, err := s.DB.Collection("sessions").Distinct(ctx, "tenantId", bson.M{"expiresAt": bson.M{"$gt": now}})
 	if err != nil {
 		return model.LastMinuteResponse{}, fmt.Errorf("read active sessions: %w", err)
 	}
-
 	cursor, err = s.DB.Collection("metrics").Aggregate(ctx, collectionPipeline(start, end))
 	if err != nil {
 		return model.LastMinuteResponse{}, fmt.Errorf("aggregate collection metrics: %w", err)
 	}
 	var groups []metricGroup
-	if err := cursor.All(ctx, &groups); err != nil {
+	if err = cursor.All(ctx, &groups); err != nil {
 		return model.LastMinuteResponse{}, fmt.Errorf("decode collection metrics: %w", err)
 	}
-
-	return assembleResponse(now, users, activeIDs, groups)
+	response, err := assembleResponse(now, users, activeIDs, groups)
+	if err != nil {
+		return response, err
+	}
+	cursor, err = s.DB.Collection("metrics").Aggregate(ctx, httpPipeline(start, end))
+	if err != nil {
+		return response, fmt.Errorf("aggregate HTTP metrics: %w", err)
+	}
+	var traffic []httpMetricGroup
+	if err = cursor.All(ctx, &traffic); err != nil {
+		return response, fmt.Errorf("decode HTTP metrics: %w", err)
+	}
+	// A successful query means HTTP measurement is available. No traffic in this
+	// minute is a measured zero, rather than N/A.
+	response.HTTPAvailable = true
+	positions := make(map[string]int)
+	for i := range response.Users {
+		response.Users[i].HTTPBytesIn = new(int64)
+		response.Users[i].HTTPBytesOut = new(int64)
+		positions[response.Users[i].TenantID] = i
+	}
+	for _, g := range traffic {
+		if !validMetricCounter(g.BytesIn) || !validMetricCounter(g.BytesOut) || !validMetricCounter(g.Requests) {
+			return response, fmt.Errorf("HTTP counter is outside the supported range")
+		}
+		pos, exists := positions[g.TenantID]
+		if !exists {
+			// Retain traffic for anonymous and deleted accounts in All users totals.
+			// These extra traffic rows do not increase TotalUsers or ActiveUsers.
+			row := model.UserMetrics{TenantID: g.TenantID, HTTPBytesIn: new(int64), HTTPBytesOut: new(int64), Collections: emptyCollections()}
+			pos = len(response.Users)
+			positions[g.TenantID] = pos
+			response.Users = append(response.Users, row)
+		}
+		*response.Users[pos].HTTPBytesIn = g.BytesIn
+		*response.Users[pos].HTTPBytesOut = g.BytesOut
+	}
+	sort.Slice(response.Users, func(i, j int) bool { return response.Users[i].TenantID < response.Users[j].TenantID })
+	return response, nil
 }
-
 func minuteWindow(now time.Time) (time.Time, time.Time) {
 	start := now.UTC().Truncate(time.Minute)
 	return start, start.Add(time.Minute)
 }
-
 func collectionPipeline(start, end time.Time) mongo.Pipeline {
 	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "category", Value: "collection"},
-			{Key: "collection", Value: bson.D{{Key: "$in", Value: model.CollectionNames}}},
-			{Key: "bucketStart", Value: bson.D{
-				{Key: "$gte", Value: start}, {Key: "$lt", Value: end},
-			}},
-		}}},
-		bson.D{{Key: "$group", Value: bson.D{
-			{Key: "_id", Value: bson.D{
-				{Key: "tenantId", Value: "$tenantId"},
-				{Key: "collection", Value: "$collection"},
-			}},
-			{Key: "added", Value: bson.D{{Key: "$sum", Value: "$added"}}},
-			{Key: "updated", Value: bson.D{{Key: "$sum", Value: "$updated"}}},
-			{Key: "deleted", Value: bson.D{{Key: "$sum", Value: "$deleted"}}},
-			{Key: "errors", Value: bson.D{{Key: "$sum", Value: "$errors"}}},
-		}}},
+		bson.D{{Key: "$match", Value: bson.M{"category": "collection", "collection": bson.M{"$in": model.CollectionNames}, "bucketStart": bson.M{"$gte": start, "$lt": end}}}},
+		bson.D{{Key: "$group", Value: bson.M{"_id": bson.M{"tenantId": "$tenantId", "collection": "$collection"}, "added": bson.M{"$sum": "$added"}, "updated": bson.M{"$sum": "$updated"}, "deleted": bson.M{"$sum": "$deleted"}, "errors": bson.M{"$sum": "$errors"}}}},
 	}
 }
-
+func httpPipeline(start, end time.Time) mongo.Pipeline {
+	return mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.M{"category": "http", "bucketStart": bson.M{"$gte": start, "$lt": end}}}},
+		bson.D{{Key: "$group", Value: bson.M{"_id": "$tenantId", "bytesIn": bson.M{"$sum": "$bytesIn"}, "bytesOut": bson.M{"$sum": "$bytesOut"}, "requests": bson.M{"$sum": "$requests"}}}},
+	}
+}
+func validMetricCounter(n int64) bool { return n >= 0 && n <= 9007199254740991 }
+func emptyCollections() map[string]model.Counts {
+	result := make(map[string]model.Counts, len(model.CollectionNames))
+	for _, name := range model.CollectionNames {
+		result[name] = model.Counts{}
+	}
+	return result
+}
 func assembleResponse(now time.Time, users []userDocument, activeIDs []interface{}, groups []metricGroup) (model.LastMinuteResponse, error) {
 	start, end := minuteWindow(now)
-	response := model.LastMinuteResponse{
-		WindowStart: start, WindowEnd: end, ActiveAsOf: now.UTC(),
-		ActiveSource: "unexpired_sessions", HTTPAvailable: false,
-		Users: make([]model.UserMetrics, 0, len(users)),
-	}
-
+	response := model.LastMinuteResponse{WindowStart: start, WindowEnd: end, ActiveAsOf: now.UTC(), ActiveSource: "unexpired_sessions", Users: make([]model.UserMetrics, 0, len(users))}
 	active := make(map[string]bool)
-	for _, value := range activeIDs {
-		if id, ok := value.(string); ok {
+	for _, v := range activeIDs {
+		if id, ok := v.(string); ok {
 			active[id] = true
 		}
 	}
-
-	positions := make(map[string]int, len(users))
-	for _, user := range users {
-		if user.TenantID == "" {
+	positions := make(map[string]int)
+	for _, u := range users {
+		if u.TenantID == "" {
 			return response, fmt.Errorf("a users document has no tenantId")
 		}
-		if _, exists := positions[user.TenantID]; exists {
+		if _, exists := positions[u.TenantID]; exists {
 			return response, fmt.Errorf("multiple users share a tenantId; per-user attribution is ambiguous")
 		}
-		row := model.UserMetrics{
-			TenantID: user.TenantID, Active: active[user.TenantID],
-			Collections: make(map[string]model.Counts, len(model.CollectionNames)),
-		}
-		for _, collection := range model.CollectionNames {
-			row.Collections[collection] = model.Counts{}
-		}
-		// Nil HTTP pointers encode as null, not a misleading measured zero.
-		positions[row.TenantID] = len(response.Users)
-		response.Users = append(response.Users, row)
-		if row.Active {
+		positions[u.TenantID] = len(response.Users)
+		response.Users = append(response.Users, model.UserMetrics{
+			TenantID:    u.TenantID,
+			Username:    u.Username,
+			Active:      active[u.TenantID],
+			Collections: emptyCollections(),
+		})
+		if active[u.TenantID] {
 			response.ActiveUsers++
 		}
 	}
-
-	for _, group := range groups {
-		position, exists := positions[group.ID.TenantID]
+	for _, g := range groups {
+		pos, exists := positions[g.ID.TenantID]
 		if !exists {
-			// Historical buckets for deleted users are excluded from current-user totals.
 			continue
 		}
-		if _, allowed := response.Users[position].Collections[group.ID.Collection]; !allowed {
+		if _, allowed := response.Users[pos].Collections[g.ID.Collection]; !allowed {
 			continue
 		}
-		counts := group.Counts
-		const maxSafeInteger = int64(9007199254740991)
-		for _, count := range []int64{counts.Added, counts.Updated, counts.Deleted, counts.Errors} {
-			if count < 0 || count > maxSafeInteger {
+		c := g.Counts
+		for _, n := range []int64{c.Added, c.Updated, c.Deleted, c.Errors} {
+			if !validMetricCounter(n) {
 				return response, fmt.Errorf("collection counter is outside the supported range")
 			}
 		}
-		response.Users[position].Collections[group.ID.Collection] = counts
+		response.Users[pos].Collections[g.ID.Collection] = c
 	}
-
 	response.TotalUsers = len(response.Users)
-	sort.Slice(response.Users, func(i, j int) bool {
-		return response.Users[i].TenantID < response.Users[j].TenantID
-	})
+	sort.Slice(response.Users, func(i, j int) bool { return response.Users[i].TenantID < response.Users[j].TenantID })
 	return response, nil
 }

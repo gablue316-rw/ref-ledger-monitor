@@ -16,6 +16,7 @@ type Counts struct {
 
 type UserMetrics struct {
 	TenantID     string            `json:"tenantId"`
+	Username     string            `json:"username"`
 	Active       bool              `json:"active"`
 	HTTPBytesIn  *int64            `json:"httpBytesIn"`
 	HTTPBytesOut *int64            `json:"httpBytesOut"`

@@ -144,6 +144,7 @@
         #rl-monitor input {
           width: 72px;
         }
+        #rl-monitor #rl-user-filter { width: 320px; }
         #rl-monitor .scope {
           font-size: 12px;
           color: var(--muted);
@@ -265,7 +266,7 @@
         }
         #rl-monitor table {
           width: 100%;
-          min-width: 1150px;
+          min-width: 1350px;
           border-collapse: collapse;
           font-size: 12px;
         }
@@ -283,7 +284,9 @@
           white-space: nowrap;
         }
         #rl-monitor th:first-child,
-        #rl-monitor td:first-child {
+        #rl-monitor td:first-child,
+        #rl-monitor th:nth-child(2),
+        #rl-monitor td:nth-child(2) {
           text-align: left;
         }
         #rl-monitor thead th {
@@ -408,10 +411,15 @@
         </div>
       </section>
       <div class="toolbar">
-        <label for="rl-user-select">User</label
-        ><select id="rl-user-select">
-          <option value="">All users</option></select
-        ><label for="rl-refresh">Refresh every</label
+        <label for="rl-filter-by">Filter by</label>
+        <select id="rl-filter-by">
+          <option value="username">Username</option>
+          <option value="tenantId">Tenant ID</option>
+        </select>
+        <label for="rl-user-filter">Search</label>
+        <input id="rl-user-filter" type="search" placeholder="All users — enter username" autocomplete="off" aria-describedby="rl-filter-help" />
+        <span id="rl-filter-help" class="sub">Case-insensitive partial match</span>
+        <label for="rl-refresh">Refresh every</label
         ><input
           id="rl-refresh"
           type="number"
@@ -564,19 +572,6 @@
           }
           function accept(data) {
             latest = data;
-            const picker = $("rl-user-select"),
-              selected = picker.value;
-            const all = document.createElement("option");
-            all.value = "";
-            all.textContent = "All users";
-            picker.replaceChildren(all);
-            for (const u of data.users) {
-              const option = document.createElement("option");
-              option.value = u.tenantId;
-              option.textContent = u.tenantId;
-              picker.append(option);
-            }
-            picker.value = data.users.some((u) => u.tenantId === selected) ? selected : "";
             $("rl-total-users").textContent = fmt.format(data.totalUsers);
             $("rl-active-users").textContent = fmt.format(data.activeUsers);
             const percent = data.totalUsers ? (100 * data.activeUsers) / data.totalUsers : 0;
@@ -617,11 +612,12 @@
               id = document.createElement("th");
             id.scope = "row";
             id.textContent = isTotal
-              ? $("rl-user-select").value
-                ? "Selected user total"
-                : "All users"
-              : user.tenantId;
+              ? ($("rl-user-filter").value.trim() ? "Filtered total" : "All users")
+              : username(user) || "Unavailable";
             row.append(id);
+            const tenant = document.createElement("td");
+            tenant.textContent = isTotal ? "—" : user.tenantId;
+            row.append(tenant);
             for (const key of ["httpBytesIn", "httpBytesOut"]) {
               const cell = document.createElement("td");
               cell.textContent = user[key] === null ? "N/A" : fmt.format(user[key]);
@@ -632,11 +628,12 @@
           }
           function render() {
             if (!latest) return;
-            const selected = $("rl-user-select").value,
-              users = selected ? latest.users.filter((u) => u.tenantId === selected) : latest.users,
+            const query = $("rl-user-filter").value.trim(),
+              field = $("rl-filter-by").value,
+              users = latest.users.filter((u) => matchesUser(u, field, query)),
               total = aggregate(users);
             $("rl-scope").textContent =
-              (selected ? "User " + selected : "All users") + " · Current minute";
+              (query ? `${field === "username" ? "Username" : "Tenant ID"} contains "${query}" · ${fmt.format(users.length)} matching users` : "All users") + " · Current minute";
             gauge(
               $("rl-http-in"),
               "",
@@ -690,7 +687,8 @@
             }
             const head = document.createElement("tr");
             for (const text of [
-              "User ID",
+              "Username",
+              "Tenant ID",
               "HTTP Bytes In",
               "HTTP Bytes Out",
               ...collections.map(title),
@@ -705,7 +703,7 @@
             if (!users.length) {
               const tr = document.createElement("tr"),
                 td = document.createElement("td");
-              td.colSpan = 10;
+              td.colSpan = collections.length + 4;
               td.textContent = "No users to display.";
               tr.append(td);
               $("rl-user-rows").append(tr);
@@ -732,10 +730,23 @@
               button.disabled = false;
             }
           };
-          $("rl-user-select").onchange = render;
+          // Metrics are grouped by tenantId. The API must also return username.
+          function username(user) {
+            return typeof user.username === "string" ? user.username.trim() : "";
+          }
+          function matchesUser(user, field, query) {
+            const value = field === "username" ? username(user) : user.tenantId;
+            return value.toLowerCase().includes(query.trim().toLowerCase());
+          }
+          $("rl-user-filter").oninput = render;
+          $("rl-filter-by").onchange = () => {
+            $("rl-user-filter").placeholder = $("rl-filter-by").value === "username"
+              ? "All users — enter username" : "All users — enter tenant ID";
+            render();
+          };
           // GET api/metrics/last-minute returns collection counters for the last
           // completed UTC minute, and current users with unexpired sessions.
-          // User IDs display tenantId; updated is labeled Changed.
+          // Rows display username and tenantId; updated is labeled Changed.
           // HTTP counters are null until Ref Ledger records HTTP telemetry.
           // There is no automatic demo-data fallback on this live page.
           function validate(data) {
@@ -754,6 +765,7 @@
                   u &&
                   typeof u.tenantId === "string" &&
                   u.tenantId &&
+                  (u.username === undefined || u.username === null || typeof u.username === "string") &&
                   typeof u.active === "boolean" &&
                   (u.httpBytesIn === null || count(u.httpBytesIn)) &&
                   (u.httpBytesOut === null || count(u.httpBytesOut)) &&

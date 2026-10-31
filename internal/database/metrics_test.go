@@ -7,14 +7,13 @@ import (
 	"time"
 
 	"github.com/gablue316/ref-ledger-monitor/internal/model"
-
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-func TestWindowExcludesCurrentMinute(t *testing.T) {
+func TestWindowIncludesCurrentMinute(t *testing.T) {
 	now := time.Date(2026, 10, 29, 8, 22, 59, 0, time.FixedZone("EDT", -4*3600))
 	start, end := minuteWindow(now)
-	if start.Format(time.RFC3339) != "2026-10-29T12:21:00Z" || end.Format(time.RFC3339) != "2026-10-29T12:22:00Z" {
+	if start.Format(time.RFC3339) != "2026-10-29T12:22:00Z" || end.Format(time.RFC3339) != "2026-10-29T12:23:00Z" {
 		t.Fatalf("unexpected UTC window %v to %v", start, end)
 	}
 	pipeline := collectionPipeline(start, end)
@@ -34,7 +33,11 @@ func TestResponseJoinsUsersSessionsAndCounters(t *testing.T) {
 	group.ID.TenantID, group.ID.Collection = "user-b", "games"
 	orphan := group
 	orphan.ID.TenantID = "deleted-user"
-	response, err := assembleResponse(time.Now(), []userDocument{{"user-b"}, {"user-a"}}, []interface{}{"user-b", "user-b", "deleted-user"}, []metricGroup{group, orphan})
+	users := []userDocument{
+		{TenantID: "user-b", Username: "bravo@test.com"},
+		{TenantID: "user-a", Username: "alpha@test.com"},
+	}
+	response, err := assembleResponse(time.Now(), users, []interface{}{"user-b", "user-b", "deleted-user"}, []metricGroup{group, orphan})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,6 +46,9 @@ func TestResponseJoinsUsersSessionsAndCounters(t *testing.T) {
 	}
 	if response.Users[0].TenantID != "user-a" || response.Users[0].Active {
 		t.Fatal("users must sort and zero-activity users must remain")
+	}
+	if response.Users[0].Username != "alpha@test.com" || response.Users[1].Username != "bravo@test.com" {
+		t.Fatal("usernames must remain associated with their tenant IDs")
 	}
 	for _, user := range response.Users {
 		if len(user.Collections) != 7 {
@@ -65,6 +71,9 @@ func TestResponseJoinsUsersSessionsAndCounters(t *testing.T) {
 	if !strings.Contains(string(encoded), `"httpBytesIn":null`) {
 		t.Fatal("null was not preserved")
 	}
+	if !strings.Contains(string(encoded), `"username":"alpha@test.com"`) {
+		t.Fatal("username was not included in the JSON response")
+	}
 }
 
 func TestEmptyDatabaseHasArrayAndNoActiveUsers(t *testing.T) {
@@ -75,14 +84,17 @@ func TestEmptyDatabaseHasArrayAndNoActiveUsers(t *testing.T) {
 }
 
 func TestInvalidUserIdentityAndCountersFail(t *testing.T) {
-	for _, users := range [][]userDocument{{{""}}, {{"same"}, {"same"}}} {
+	for _, users := range [][]userDocument{
+		{{TenantID: ""}},
+		{{TenantID: "same"}, {TenantID: "same"}},
+	} {
 		if _, err := assembleResponse(time.Now(), users, nil, nil); err == nil {
 			t.Fatal("expected identity validation error")
 		}
 	}
 	group := metricGroup{Counts: model.Counts{Errors: -1}}
 	group.ID.TenantID, group.ID.Collection = "user", "games"
-	if _, err := assembleResponse(time.Now(), []userDocument{{"user"}}, nil, []metricGroup{group}); err == nil {
+	if _, err := assembleResponse(time.Now(), []userDocument{{TenantID: "user"}}, nil, []metricGroup{group}); err == nil {
 		t.Fatal("negative counter accepted")
 	}
 }
