@@ -58,7 +58,9 @@ import (
 // Set variables in PowerShell or in your provider's environment settings.
 // This program does not automatically read a .env file.
 // Use HTTPS at your hosting provider/reverse proxy for deployed Basic Auth.
-// No Ref Ledger internal packages, writes, or index creation are required.
+// Administration uses the monitor database directly; no Ref Ledger imports are required.
+// ADMIN_ALLOWED_ORIGINS optionally overrides allowed browser write origins (comma-separated).
+// Defaults: https://ref-ledger.com,https://www.ref-ledger.com; direct request origin is also allowed.
 
 type Config struct {
 	MongoURI    string
@@ -123,17 +125,7 @@ func run() error {
 		db:     client.Database(cfg.MongoDBName),
 	}
 
-	mux := http.NewServeMux()
-
-	// Liveness is deliberately small and contains no database credentials or metrics.
-	mux.HandleFunc("/healthz", healthHandler)
-
-	// Protect the HTML, readiness check, and metrics API with monitor credentials.
-	mux.HandleFunc("/readyz", app.requireAuth(app.readyHandler))
-	mux.HandleFunc("/api/about", app.requireAuth(app.aboutHandler))
-	mux.HandleFunc("/api/metrics/last-minute", app.requireAuth(app.metricsHandler))
-	mux.HandleFunc("/metrics", app.requireAuth(app.pageHandler))
-	mux.HandleFunc("/", app.requireAuth(app.pageHandler))
+	mux := app.routes()
 
 	server := &http.Server{
 		Addr:              cfg.Address,
@@ -317,8 +309,8 @@ func (app *Application) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		validPass := subtle.ConstantTimeCompare(passHash[:], wantPass[:])
 
 		if !ok || validUser&validPass != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="Ref Ledger Monitor", charset="UTF-8"`)
-			http.Error(w, "Monitor sign-in required", http.StatusUnauthorized)
+			w.Header().Set("WWW-Authenticate", `Basic realm="Ref Ledger Administration", charset="UTF-8"`)
+			http.Error(w, "Administrator sign-in required", http.StatusUnauthorized)
 			return
 		}
 
@@ -338,7 +330,7 @@ func allowRead(w http.ResponseWriter, r *http.Request) bool {
 
 func (app *Application) pageHandler(w http.ResponseWriter, r *http.Request) {
 	// Do not let the root route serve the HTML for misspelled API paths.
-	if r.URL.Path != "/" && r.URL.Path != "/metrics" {
+	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
@@ -384,7 +376,7 @@ func (app *Application) aboutHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		Application string `json:"application"`
 		Version     string `json:"version"`
-	}{Application: "Ref Ledger Monitor", Version: app.config.Release})
+	}{Application: "Ref Ledger Administration", Version: app.config.Release})
 }
 
 func (app *Application) metricsHandler(w http.ResponseWriter, r *http.Request) {
