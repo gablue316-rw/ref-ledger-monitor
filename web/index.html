@@ -780,7 +780,7 @@
               (data.httpAvailable === false &&
                 data.users.some((u) => u.httpBytesIn !== null || u.httpBytesOut !== null)) ||
               new Set(data.users.map((u) => u.tenantId)).size !== data.users.length ||
-              data.totalUsers !== data.users.length ||
+              data.totalUsers !== data.users.filter((u) => u.tenantId !== "anonymous").length ||
               data.activeUsers !== data.users.filter((u) => u.active).length
             )
               throw Error("User totals do not match");
