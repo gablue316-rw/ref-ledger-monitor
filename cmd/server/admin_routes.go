@@ -11,10 +11,20 @@ import (
 	"strings"
 )
 
-// All administrator operations use the monitor's separate Basic Auth identity.
+// Administrator operations use the monitor's separate session identity.
 // The actor is not a Ref Ledger user; cancelling customer sessions cannot log it out.
 func (app *Application) routes() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/login", app.adminLoginPage)
+	mux.HandleFunc("/api/admin/login", app.adminWrite(app.adminLoginHandler))
+	mux.HandleFunc("/api/admin/logout", app.adminWrite(app.adminLogoutHandler))
+	mux.HandleFunc("/admin-logout.js", app.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if !allowRead(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		http.ServeFile(w, r, filepath.Join(filepath.Dir(app.config.IndexFile), "admin-logout.js"))
+	}))
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.HandleFunc("/readyz", app.requireAuth(app.readyHandler))
 	mux.HandleFunc("/api/about", app.requireAuth(app.aboutHandler))
@@ -67,7 +77,7 @@ func (app *Application) legacyMetricsHandler(w http.ResponseWriter, r *http.Requ
 	http.Redirect(w, r, "/admin/#metrics", http.StatusTemporaryRedirect)
 }
 
-// JSON-only writes and origin checks protect browser-cached Basic Auth credentials.
+// JSON-only writes and origin checks protect administrator sessions.
 // Never trust X-Forwarded-Host from arbitrary direct callers. Public proxy origins
 // are explicit because the main Ref Ledger proxy rewrites the monitor Host header.
 func (app *Application) adminWrite(next http.HandlerFunc) http.HandlerFunc {

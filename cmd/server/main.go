@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,8 +39,8 @@ import (
 //   MONGODB_USERNAME  Required for Atlas.
 //   MONGODB_PASSWORD  Required for Atlas.
 //   MONGODB_NAME      Explicit database name; there is no fallback database.
-//   MONITOR_USERNAME  Separate monitor HTTP Basic Auth username.
-//   MONITOR_PASSWORD  Separate monitor HTTP Basic Auth password.
+//   MONITOR_USERNAME  Separate monitor administrator username.
+//   MONITOR_PASSWORD  Separate monitor administrator password.
 //
 // Optional environment variables:
 //   PORT              Default: 8081. Hosting providers can supply their own.
@@ -57,7 +55,7 @@ import (
 //
 // Set variables in PowerShell or in your provider's environment settings.
 // This program does not automatically read a .env file.
-// Use HTTPS at your hosting provider/reverse proxy for deployed Basic Auth.
+// Use HTTPS at your hosting provider/reverse proxy for deployed administration.
 // Administration uses the monitor database directly; no Ref Ledger imports are required.
 // ADMIN_ALLOWED_ORIGINS optionally overrides allowed browser write origins (comma-separated).
 // Defaults: https://ref-ledger.com,https://www.ref-ledger.com; direct request origin is also allowed.
@@ -292,30 +290,6 @@ func connectMongo(parent context.Context, uri string) (*mongo.Client, error) {
 
 	log.Print("MongoDB connection verified")
 	return client, nil
-}
-
-func (app *Application) requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-
-		username, password, ok := r.BasicAuth()
-		userHash := sha256.Sum256([]byte(username))
-		passHash := sha256.Sum256([]byte(password))
-		wantUser := sha256.Sum256([]byte(app.config.Username))
-		wantPass := sha256.Sum256([]byte(app.config.Password))
-
-		validUser := subtle.ConstantTimeCompare(userHash[:], wantUser[:])
-		validPass := subtle.ConstantTimeCompare(passHash[:], wantPass[:])
-
-		if !ok || validUser&validPass != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="Ref Ledger Administration", charset="UTF-8"`)
-			http.Error(w, "Administrator sign-in required", http.StatusUnauthorized)
-			return
-		}
-
-		next(w, r)
-	}
 }
 
 func allowRead(w http.ResponseWriter, r *http.Request) bool {

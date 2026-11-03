@@ -5,3 +5,7 @@
 /bin/
 /dist/
 *.bkup
+*.before-logout
+*.before-session-tests
+*.exe~
+update-admin-session-tests.py

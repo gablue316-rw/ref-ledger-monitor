@@ -27,6 +27,8 @@ func TestMongoReaderQueriesAndDecodesMetrics(t *testing.T) {
 					{Key: "deleted", Value: int64(174)},
 					{Key: "errors", Value: int64(0)},
 				}),
+			// HTTP metrics aggregation: no recorded traffic.
+			mtest.CreateCursorResponse(0, mt.DB.Name()+".metrics", mtest.FirstBatch),
 		)
 		store := &MetricsStore{DB: mt.DB}
 		result, err := store.LastMinute(context.Background(), time.Date(2026, 10, 29, 12, 6, 20, 0, time.UTC))
@@ -41,7 +43,11 @@ func TestMongoReaderQueriesAndDecodesMetrics(t *testing.T) {
 			mt.Fatalf("decoded wrong counts %+v", games)
 		}
 		events := mt.GetAllStartedEvents()
-		if len(events) != 3 || events[0].CommandName != "find" || events[1].CommandName != "distinct" || events[2].CommandName != "aggregate" {
+		if len(events) != 4 ||
+			events[0].CommandName != "find" ||
+			events[1].CommandName != "distinct" ||
+			events[2].CommandName != "aggregate" ||
+			events[3].CommandName != "aggregate" {
 			mt.Fatalf("unexpected database operations %+v", events)
 		}
 	})
