@@ -202,7 +202,7 @@ func TestAdminCancelOneSession(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("ownership filter", func(mt *mtest.T) {
 		id := primitive.NewObjectID()
-		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "account-target"}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}))
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "account-target"}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}))
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -226,7 +226,7 @@ func TestAdminRoleTransaction(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("update and invalidate sessions", func(mt *mtest.T) {
 		id := primitive.NewObjectID()
-		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".userroles", bson.D{{Key: "name", Value: "readonly"}, {Key: "active", Value: true}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target"}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 2}), mtest.CreateSuccessResponse())
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".userroles", bson.D{{Key: "name", Value: "readonly"}, {Key: "active", Value: true}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target"}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 2}), mtest.CreateSuccessResponse())
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -243,7 +243,7 @@ func TestAdminRoleTransaction(t *testing.T) {
 func TestAdminPasswordBcrypt(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("bcrypt update", func(mt *mtest.T) {
-		mt.AddMockResponses(adminSessionMock(mt), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}))
+		addMaintenanceMocks(mt, adminSessionMock(mt), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}))
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -273,7 +273,7 @@ func TestAccountDeleteTransaction(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("delete all selected account data", func(mt *mtest.T) {
 		id := primitive.NewObjectID()
-		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections", bson.D{{Key: "name", Value: "games"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "sessions"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "roles"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "users"}, {Key: "type", Value: "collection"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target-account"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(1)}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 4}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 2}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 0}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}), mtest.CreateSuccessResponse())
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections", bson.D{{Key: "name", Value: "games"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "sessions"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "roles"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "users"}, {Key: "type", Value: "collection"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target-account"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(1)}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 4}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 2}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 0}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}), mtest.CreateSuccessResponse())
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -303,7 +303,7 @@ func TestAccountDeleteTransaction(t *testing.T) {
 	})
 	mt.Run("wrong confirmation aborts", func(mt *mtest.T) {
 		id := primitive.NewObjectID()
-		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections"), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target"}}), mtest.CreateSuccessResponse())
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections"), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target"}}), mtest.CreateSuccessResponse())
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -338,7 +338,7 @@ func TestLegacyMetricsRedirect(t *testing.T) {
 func TestSportsCannotDeactivateWhenAssigned(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("assigned sport", func(mt *mtest.T) {
-		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".sports", bson.D{{Key: "id", Value: "Basketball"}, {Key: "name", Value: "Basketball"}, {Key: "active", Value: true}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: primitive.NewObjectID()}}))
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".sports", bson.D{{Key: "id", Value: "Basketball"}, {Key: "name", Value: "Basketball"}, {Key: "active", Value: true}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: primitive.NewObjectID()}}))
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -357,7 +357,7 @@ func TestSportsCannotDeactivateWhenAssigned(t *testing.T) {
 func TestOfficialRolesPreserveArraySchema(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("literal role data", func(mt *mtest.T) {
-		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".sports", bson.D{{Key: "name", Value: "Basketball"}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}))
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".sports", bson.D{{Key: "name", Value: "Basketball"}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}))
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -396,7 +396,7 @@ func TestSharedAccountDeletionIsBlocked(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("shared account", func(mt *mtest.T) {
 		id := primitive.NewObjectID()
-		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections"), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "shared-account"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(2)}}), mtest.CreateSuccessResponse())
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections"), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "shared-account"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(2)}}), mtest.CreateSuccessResponse())
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -425,7 +425,11 @@ func adminSessionMock(mt *mtest.T) bson.D {
 // This wrapper seeds MongoDB responses; it does not bypass requireAuth.
 func authenticatedAdminTestHandler(mt *mtest.T, handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mt.AddMockResponses(adminSessionMock(mt))
+		if r.Method == "POST" && r.URL.Path == "/api/admin/users/password" {
+			addMaintenanceMocks(mt, adminSessionMock(mt))
+		} else {
+			mt.AddMockResponses(adminSessionMock(mt))
+		}
 		handler.ServeHTTP(w, r)
 	})
 }
@@ -436,6 +440,9 @@ func adminDataEvents(mt *mtest.T) []*event.CommandStartedEvent {
 		var command bson.M
 		if err := bson.Unmarshal(e.Command, &command); err != nil {
 			mt.Fatal(err)
+		}
+		if command["update"] == "system_control" || command["findAndModify"] == "system_control" {
+			continue
 		}
 		if e.CommandName == "find" && command["find"] == "admin_sessions" {
 			continue
@@ -498,4 +505,11 @@ func TestMissingAdminSessionRejectsCookie(t *testing.T) {
 			mt.Fatalf("got %d, want 401", w.Code)
 		}
 	})
+}
+
+// Existing business-operation fixtures also admit and release the shared write gate.
+func addMaintenanceMocks(mt *mtest.T, responses ...bson.D) {
+	mt.AddMockResponses(responses[0], mtest.CreateSuccessResponse(), mtest.CreateSuccessResponse(bson.E{Key: "value", Value: bson.D{{Key: "activeWrites", Value: int64(1)}}}))
+	mt.AddMockResponses(responses[1:]...)
+	mt.AddMockResponses(mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}))
 }

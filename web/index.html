@@ -589,6 +589,7 @@
           <b>◉</b>Metrics</button
         ><button data-page="users"><b>♙</b>Users & sessions</button
         ><button data-page="catalog"><b>▦</b>Sports & roles</button>
+        <button data-page="maintenance"><b>⚙</b>Maintenance</button>
       </nav>
       <div class="sidefoot">
         Account scope<br /><strong>All accounts</strong>
@@ -618,6 +619,21 @@
         role="status"
         aria-live="polite"
       ></div>
+      <section class="page" id="maintenance" hidden>
+        <div class="panel" style="padding:24px">
+          <h2>Maintenance mode</h2>
+          <p>Pause changes across all accounts before exporting or running your backup script.</p>
+          <p id="maintenanceStatus" role="status" aria-live="polite">Checking maintenance status…</p>
+          <p id="maintenanceDatabase"></p>
+          <p id="maintenanceChecked"></p>
+          <button class="btn" id="maintenanceOn" type="button" disabled>Enable maintenance</button>
+          <button class="btn" id="maintenanceOff" type="button" disabled>Disable maintenance</button>
+          <button class="btn" id="maintenanceRefresh" type="button">Refresh status</button>
+          <p>Viewing and sign-in remain available. This pauses application changes, including Admin data edits.
+          Sessions and metrics may still write; backup scripts and direct MongoDB commands are not blocked.</p>
+          <p>After enabling, wait until existing application writes have finished. Keep maintenance enabled until your export or backup completes.</p>
+        </div>
+      </section>
       <section class="page" id="metrics">
         <div id="rl-monitor">
           <style>

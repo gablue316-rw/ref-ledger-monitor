@@ -50,6 +50,7 @@
     });
   }
   const names = {
+    maintenance: ["Maintenance", "Pause application changes before export or backup."],
     metrics: [
       "Metrics overview",
       "Users, HTTP traffic, and collection activity across accounts.",
@@ -78,6 +79,7 @@
     });
     $("title").textContent = names[page][0];
     $("subtitle").textContent = names[page][1];
+    if (page === "maintenance") loadMaintenance();
     if (page === "users" && !userStarted) {
       userStarted = true;
       loadUsers();
@@ -733,5 +735,49 @@
       renderRoles();
     }
   };
+  let maintenanceBusy = false;
+  function maintenanceUnknown(message) {
+    $("maintenanceStatus").textContent = message;
+    $("maintenanceOn").disabled = true;
+    $("maintenanceOff").disabled = true;
+    $("maintenanceChecked").textContent = "Status unverified. Refresh before starting a backup.";
+  }
+  function showMaintenance(data) {
+    $("maintenanceStatus").textContent = !data.enabled
+      ? "Maintenance OFF — application changes are enabled."
+      : data.drained
+        ? "Maintenance ACTIVE — existing application writes have finished. You can start your application-data export or backup."
+        : `Maintenance STARTING — waiting for ${data.activeWrites} application write(s). Do not start your backup yet.`;
+    $("maintenanceDatabase").textContent = "Database: " + data.database;
+    $("maintenanceChecked").textContent = "Verified: " + new Date().toLocaleTimeString();
+    $("maintenanceOn").disabled = data.enabled;
+    $("maintenanceOff").disabled = !data.enabled;
+  }
+  async function loadMaintenance() {
+    if (maintenanceBusy) return;
+    maintenanceBusy = true;
+    maintenanceUnknown("Verifying maintenance status…");
+    try { showMaintenance(await request("api/admin/maintenance")); }
+    catch (error) { maintenanceUnknown(error.message); }
+    finally { maintenanceBusy = false; }
+  }
+  async function setMaintenance(enabled) {
+    if (maintenanceBusy) return;
+    maintenanceBusy = true;
+    maintenanceUnknown("Changing maintenance mode…");
+    try { showMaintenance(await post("api/admin/maintenance", { enabled })); }
+    catch (error) { maintenanceUnknown(error.message); }
+    finally { maintenanceBusy = false; }
+  }
+  $("maintenanceOn").onclick = () => setMaintenance(true);
+  $("maintenanceOff").onclick = () => setMaintenance(false);
+  $("maintenanceRefresh").onclick = loadMaintenance;
+  setInterval(() => {
+    if (location.hash === "#maintenance" && !document.hidden) loadMaintenance();
+  }, 2000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) maintenanceUnknown("Status needs to be refreshed.");
+    else if (location.hash === "#maintenance") loadMaintenance();
+  });
   navigate();
 })();
