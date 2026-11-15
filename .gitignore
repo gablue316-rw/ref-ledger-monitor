@@ -9,3 +9,9 @@
 *.before-session-tests
 *.exe~
 update-admin-session-tests.py
+# Generated review/source archives
+*.zip
+/docs
+/tests
+*.txt
+*.patch

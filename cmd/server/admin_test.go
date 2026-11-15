@@ -273,7 +273,14 @@ func TestAccountDeleteTransaction(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("delete all selected account data", func(mt *mtest.T) {
 		id := primitive.NewObjectID()
-		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections", bson.D{{Key: "name", Value: "games"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "sessions"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "roles"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "users"}, {Key: "type", Value: "collection"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target-account"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(1)}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 4}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 2}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 0}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}), mtest.CreateSuccessResponse())
+		issuer, auth0Calls := mockAdminAuth0(mt.T, http.StatusNoContent)
+		defer func() {
+			if *auth0Calls != 1 {
+				mt.Errorf("Auth0 delete calls: %d", *auth0Calls)
+			}
+		}()
+
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections", bson.D{{Key: "name", Value: "games"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "sessions"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "roles"}, {Key: "type", Value: "collection"}}, bson.D{{Key: "name", Value: "users"}, {Key: "type", Value: "collection"}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target-account"}, {Key: "mobileIdentity", Value: bson.M{"issuer": issuer, "subject": "auth0|123"}}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(1)}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(1)}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target-account"}, {Key: "mobileIdentity", Value: bson.M{"issuer": issuer, "subject": "auth0|123"}}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(1)}}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 4}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 2}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 0}), mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}), mtest.CreateSuccessResponse())
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -512,4 +519,28 @@ func addMaintenanceMocks(mt *mtest.T, responses ...bson.D) {
 	mt.AddMockResponses(responses[0], mtest.CreateSuccessResponse(), mtest.CreateSuccessResponse(bson.E{Key: "value", Value: bson.D{{Key: "activeWrites", Value: int64(1)}}}))
 	mt.AddMockResponses(responses[1:]...)
 	mt.AddMockResponses(mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}, bson.E{Key: "nModified", Value: 1}))
+}
+
+func TestAccountDeleteAuth0FailureKeepsMongoDB(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("Auth0 permission failure", func(mt *mtest.T) {
+		issuer, calls := mockAdminAuth0(mt.T, http.StatusForbidden)
+		id := primitive.NewObjectID()
+		addMaintenanceMocks(mt, adminSessionMock(mt), cursor(mt.DB.Name()+".$cmd.listCollections"), cursor(mt.DB.Name()+".users", bson.D{
+			{Key: "_id", Value: id}, {Key: "username", Value: "target@test.com"}, {Key: "tenantId", Value: "target"},
+			{Key: "mobileIdentity", Value: bson.M{"issuer": issuer, "subject": "auth0|123"}},
+		}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(1)}}), cursor(mt.DB.Name()+".users", bson.D{{Key: "n", Value: int32(1)}}))
+		app := testApp()
+		app.db = mt.DB
+		w := httptest.NewRecorder()
+		app.routes().ServeHTTP(w, adminRequest("POST", "/api/admin/users/delete", `{"userId":"`+id.Hex()+`","confirmationUsername":"target@test.com"}`))
+		if w.Code != 502 || *calls != 1 {
+			mt.Fatalf("status=%d calls=%d body=%s", w.Code, *calls, w.Body.String())
+		}
+		for _, event := range adminDataEvents(mt) {
+			if event.CommandName == "delete" || event.CommandName == "commitTransaction" {
+				mt.Fatal("MongoDB modified after Auth0 failure")
+			}
+		}
+	})
 }

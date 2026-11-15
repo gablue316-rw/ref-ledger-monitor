@@ -294,7 +294,7 @@
       $("dialogFields").append(
         el(
           "p",
-          "This permanently deletes this user, every record belonging to this account, and all its sessions. Shared global sports and role definitions remain. This cannot be undone.",
+          "This permanently deletes this Auth0 identity, the Ref Ledger user, every record belonging to this account, and all its sessions. Shared global sports and role definitions remain. This cannot be undone.",
         ),
       );
       field(
@@ -772,12 +772,7 @@
   $("maintenanceOn").onclick = () => setMaintenance(true);
   $("maintenanceOff").onclick = () => setMaintenance(false);
   $("maintenanceRefresh").onclick = loadMaintenance;
-  setInterval(() => {
-    if (location.hash === "#maintenance" && !document.hidden) loadMaintenance();
-  }, 2000);
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) maintenanceUnknown("Status needs to be refreshed.");
-    else if (location.hash === "#maintenance") loadMaintenance();
-  });
+  // Maintenance is checked on page entry and explicit button actions only.
+  // Keep the verification timestamp stable until the administrator checks again.
   navigate();
 })();

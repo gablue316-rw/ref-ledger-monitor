@@ -1005,7 +1005,8 @@
               outline: 2px solid var(--change);
               outline-offset: 3px;
             }
-            #rl-monitor dialog {
+            #rl-about-dialog {
+              --panel: #ffffff;
               color: var(--ink);
               background: var(--panel);
               border: 1px solid var(--line);
@@ -1014,14 +1015,14 @@
               width: 380px;
               max-width: calc(100% - 32px);
             }
-            #rl-monitor dialog::backdrop {
+            #rl-about-dialog::backdrop {
               background: rgb(0 0 0 / 45%);
             }
-            #rl-monitor dialog p {
+            #rl-about-dialog p {
               margin: 20px 0;
               overflow-wrap: anywhere;
             }
-            #rl-monitor dialog form {
+            #rl-about-dialog form {
               display: flex;
               justify-content: flex-end;
             }
@@ -1039,15 +1040,7 @@
               </button>
             </div>
           </header>
-          <dialog id="rl-about-dialog" aria-labelledby="rl-about-title">
-            <h2 id="rl-about-title">About Ref Ledger Administration</h2>
-            <p id="rl-about-status" role="status" aria-live="polite">
-              Loading version…
-            </p>
-            <form method="dialog">
-              <button class="monitor-button" type="submit">Close</button>
-            </form>
-          </dialog>
+
           <section class="overview" aria-label="All-user activity summary">
             <div class="panel stat">
               <div class="stat-label">Total users</div>
@@ -1453,8 +1446,8 @@
                     : "All users — enter tenant ID";
                 render();
               };
-              // GET api/metrics/last-minute returns collection counters for the last
-              // completed UTC minute, and current users with unexpired sessions.
+              // GET api/metrics/last-minute returns collection counters for the
+              // current UTC minute, and current users with unexpired sessions.
               // Rows display username and tenantId; updated is labeled Changed.
               // HTTP counters are null until Ref Ledger records HTTP telemetry.
               // There is no automatic demo-data fallback on this live page.
@@ -1507,7 +1500,7 @@
                   throw Error("Invalid minute window");
               }
               async function poll() {
-                if (busy) return;
+                if (busy || document.hidden || document.getElementById("metrics").hidden) return;
                 busy = true;
                 try {
                   const response = await fetch(
@@ -1556,6 +1549,10 @@
                 clearInterval(timer);
                 timer = setInterval(poll, refreshSeconds * 1000);
               }
+              document.addEventListener("visibilitychange", () => {
+                if (!document.hidden) poll();
+              });
+              window.addEventListener("hashchange", () => queueMicrotask(poll));
               $("rl-refresh").onchange = () => {
                 const field = $("rl-refresh"),
                   value = Number(field.value);
@@ -1721,6 +1718,15 @@
         ><span>/admin/ · Administrator workspace</span>
       </footer>
     </main>
+          <dialog id="rl-about-dialog" aria-labelledby="rl-about-title">
+            <h2 id="rl-about-title">About Ref Ledger Administration</h2>
+            <p id="rl-about-status" role="status" aria-live="polite">
+              Loading version…
+            </p>
+            <form method="dialog">
+              <button class="btn" type="submit">Close</button>
+            </form>
+          </dialog>
     <dialog id="modal">
       <h2 id="modalTitle"></h2>
       <div id="modalContent"></div>

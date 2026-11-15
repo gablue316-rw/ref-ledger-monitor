@@ -16,7 +16,7 @@ func TestWindowIncludesCurrentMinute(t *testing.T) {
 	if start.Format(time.RFC3339) != "2026-10-29T12:22:00Z" || end.Format(time.RFC3339) != "2026-10-29T12:23:00Z" {
 		t.Fatalf("unexpected UTC window %v to %v", start, end)
 	}
-	pipeline := collectionPipeline(start, end)
+	pipeline := metricsPipeline(start, end)
 	encoded, err := bson.MarshalExtJSON(bson.D{{Key: "pipeline", Value: pipeline}}, false, false)
 	if err != nil {
 		t.Fatal(err)

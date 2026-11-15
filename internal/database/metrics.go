@@ -21,14 +21,12 @@ type metricGroup struct {
 	ID struct {
 		TenantID   string `bson:"tenantId"`
 		Collection string `bson:"collection"`
+		Category   string `bson:"category"`
 	} `bson:"_id"`
 	model.Counts `bson:",inline"`
-}
-type httpMetricGroup struct {
-	TenantID string `bson:"_id"`
-	BytesIn  int64  `bson:"bytesIn"`
-	BytesOut int64  `bson:"bytesOut"`
-	Requests int64  `bson:"requests"`
+	BytesIn      int64 `bson:"bytesIn"`
+	BytesOut     int64 `bson:"bytesOut"`
+	Requests     int64 `bson:"requests"`
 }
 
 func (s *MetricsStore) LastMinute(ctx context.Context, now time.Time) (model.LastMinuteResponse, error) {
@@ -53,68 +51,79 @@ func (s *MetricsStore) LastMinute(ctx context.Context, now time.Time) (model.Las
 	if err != nil {
 		return model.LastMinuteResponse{}, fmt.Errorf("read active sessions: %w", err)
 	}
-	cursor, err = s.DB.Collection("metrics").Aggregate(ctx, collectionPipeline(start, end))
+	cursor, err = s.DB.Collection("metrics").Aggregate(ctx, metricsPipeline(start, end))
 	if err != nil {
-		return model.LastMinuteResponse{}, fmt.Errorf("aggregate collection metrics: %w", err)
+		return model.LastMinuteResponse{}, fmt.Errorf("aggregate metrics: %w", err)
 	}
 	var groups []metricGroup
 	if err = cursor.All(ctx, &groups); err != nil {
-		return model.LastMinuteResponse{}, fmt.Errorf("decode collection metrics: %w", err)
+		return model.LastMinuteResponse{}, fmt.Errorf("decode metrics: %w", err)
 	}
 	response, err := assembleResponse(now, users, activeIDs, groups)
 	if err != nil {
 		return response, err
 	}
-	cursor, err = s.DB.Collection("metrics").Aggregate(ctx, httpPipeline(start, end))
-	if err != nil {
-		return response, fmt.Errorf("aggregate HTTP metrics: %w", err)
-	}
-	var traffic []httpMetricGroup
-	if err = cursor.All(ctx, &traffic); err != nil {
-		return response, fmt.Errorf("decode HTTP metrics: %w", err)
-	}
 	// A successful query means HTTP measurement is available. No traffic in this
 	// minute is a measured zero, rather than N/A.
 	response.HTTPAvailable = true
-	positions := make(map[string]int)
+	positions := make(map[string]int, len(response.Users))
+	appendedTraffic := false
 	for i := range response.Users {
 		response.Users[i].HTTPBytesIn = new(int64)
 		response.Users[i].HTTPBytesOut = new(int64)
 		positions[response.Users[i].TenantID] = i
 	}
-	for _, g := range traffic {
+	for _, g := range groups {
+		if g.ID.Category != "http" {
+			continue
+		}
 		if !validMetricCounter(g.BytesIn) || !validMetricCounter(g.BytesOut) || !validMetricCounter(g.Requests) {
 			return response, fmt.Errorf("HTTP counter is outside the supported range")
 		}
-		pos, exists := positions[g.TenantID]
+		pos, exists := positions[g.ID.TenantID]
 		if !exists {
 			// Retain traffic for anonymous and deleted accounts in All users totals.
 			// These extra traffic rows do not increase TotalUsers or ActiveUsers.
-			row := model.UserMetrics{TenantID: g.TenantID, HTTPBytesIn: new(int64), HTTPBytesOut: new(int64), Collections: emptyCollections()}
+			row := model.UserMetrics{TenantID: g.ID.TenantID, HTTPBytesIn: new(int64), HTTPBytesOut: new(int64), Collections: emptyCollections()}
 			pos = len(response.Users)
-			positions[g.TenantID] = pos
+			positions[g.ID.TenantID] = pos
 			response.Users = append(response.Users, row)
+			appendedTraffic = true
 		}
 		*response.Users[pos].HTTPBytesIn = g.BytesIn
 		*response.Users[pos].HTTPBytesOut = g.BytesOut
 	}
-	sort.Slice(response.Users, func(i, j int) bool { return response.Users[i].TenantID < response.Users[j].TenantID })
+	if appendedTraffic {
+		sort.Slice(response.Users, func(i, j int) bool { return response.Users[i].TenantID < response.Users[j].TenantID })
+	}
 	return response, nil
 }
 func minuteWindow(now time.Time) (time.Time, time.Time) {
 	start := now.UTC().Truncate(time.Minute)
 	return start, start.Add(time.Minute)
 }
-func collectionPipeline(start, end time.Time) mongo.Pipeline {
+
+// One bounded scan serves both collection counters and HTTP traffic. Normalize
+// the HTTP collection key so older HTTP records with a collection still combine.
+func metricsPipeline(start, end time.Time) mongo.Pipeline {
 	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.M{"category": "collection", "collection": bson.M{"$in": model.CollectionNames}, "bucketStart": bson.M{"$gte": start, "$lt": end}}}},
-		bson.D{{Key: "$group", Value: bson.M{"_id": bson.M{"tenantId": "$tenantId", "collection": "$collection"}, "added": bson.M{"$sum": "$added"}, "updated": bson.M{"$sum": "$updated"}, "deleted": bson.M{"$sum": "$deleted"}, "errors": bson.M{"$sum": "$errors"}}}},
-	}
-}
-func httpPipeline(start, end time.Time) mongo.Pipeline {
-	return mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.M{"category": "http", "bucketStart": bson.M{"$gte": start, "$lt": end}}}},
-		bson.D{{Key: "$group", Value: bson.M{"_id": "$tenantId", "bytesIn": bson.M{"$sum": "$bytesIn"}, "bytesOut": bson.M{"$sum": "$bytesOut"}, "requests": bson.M{"$sum": "$requests"}}}},
+		bson.D{{Key: "$match", Value: bson.M{
+			"bucketStart": bson.M{"$gte": start, "$lt": end},
+			"$or": bson.A{
+				bson.M{"category": "collection", "collection": bson.M{"$in": model.CollectionNames}},
+				bson.M{"category": "http"},
+			},
+		}}},
+		bson.D{{Key: "$group", Value: bson.M{
+			"_id": bson.M{
+				"tenantId": "$tenantId", "category": "$category",
+				"collection": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$category", "collection"}}, "$collection", ""}},
+			},
+			"added": bson.M{"$sum": "$added"}, "updated": bson.M{"$sum": "$updated"},
+			"deleted": bson.M{"$sum": "$deleted"}, "errors": bson.M{"$sum": "$errors"},
+			"bytesIn": bson.M{"$sum": "$bytesIn"}, "bytesOut": bson.M{"$sum": "$bytesOut"},
+			"requests": bson.M{"$sum": "$requests"},
+		}}},
 	}
 }
 func validMetricCounter(n int64) bool { return n >= 0 && n <= 9007199254740991 }
@@ -154,6 +163,9 @@ func assembleResponse(now time.Time, users []userDocument, activeIDs []interface
 		}
 	}
 	for _, g := range groups {
+		if g.ID.Category == "http" {
+			continue
+		}
 		pos, exists := positions[g.ID.TenantID]
 		if !exists {
 			continue

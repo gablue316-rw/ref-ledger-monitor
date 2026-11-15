@@ -45,7 +45,7 @@ func (app *Application) adminSportsHandler(w http.ResponseWriter, r *http.Reques
 		if r.URL.Query().Get("active") == "true" {
 			filter["active"] = true
 		}
-		cur, err := coll.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "name", Value: 1}}))
+		cur, err := coll.Find(ctx, filter, options.Find().SetProjection(bson.M{"_id": 0, "id": 1, "name": 1, "active": 1}).SetSort(bson.D{{Key: "name", Value: 1}}))
 		if err != nil {
 			adminUsersError(w, 500, "Unable to load sports.")
 			return

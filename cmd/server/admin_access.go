@@ -18,7 +18,7 @@ import (
 )
 
 // Ported from the supplied Ref Ledger web server. Authentication is enforced
-// by app.routes using the monitor's independent Basic Auth credentials.
+// by app.routes using the monitor's independent administrator session.
 func (app *Application) adminRolesHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -37,7 +37,7 @@ func (app *Application) adminRolesHandler(w http.ResponseWriter, r *http.Request
 	cursor, err := collection.Find(
 		ctx,
 		bson.M{"active": true},
-		options.Find().SetSort(
+		options.Find().SetProjection(bson.M{"_id": 0, "name": 1}).SetSort(
 			bson.D{{Key: "name", Value: 1}},
 		),
 	)

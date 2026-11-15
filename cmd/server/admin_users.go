@@ -23,11 +23,12 @@ import (
 )
 
 type adminUserRecord struct {
-	ID       primitive.ObjectID `bson:"_id" json:"id"`
-	Username string             `bson:"username" json:"username"`
-	Name     string             `bson:"name" json:"name"`
-	TenantID string             `bson:"tenantId" json:"tenantId"`
-	Role     string             `bson:"role" json:"role"`
+	MobileIdentity adminAuth0Identity `bson:"mobileIdentity" json:"-"`
+	ID             primitive.ObjectID `bson:"_id" json:"id"`
+	Username       string             `bson:"username" json:"username"`
+	Name           string             `bson:"name" json:"name"`
+	TenantID       string             `bson:"tenantId" json:"tenantId"`
+	Role           string             `bson:"role" json:"role"`
 }
 
 type adminUserSession struct {
@@ -49,7 +50,7 @@ type adminUserAction struct {
 }
 
 func adminUserProjection() bson.M {
-	return bson.M{"_id": 1, "username": 1, "name": 1, "tenantId": 1, "role": 1}
+	return bson.M{"_id": 1, "username": 1, "name": 1, "tenantId": 1, "role": 1, "mobileIdentity": 1}
 }
 
 func adminUsersJSON(w http.ResponseWriter, status int, body interface{}) {
@@ -232,7 +233,7 @@ func (app *Application) adminUsersCancelSessions(w http.ResponseWriter, r *http.
 		adminUsersError(w, http.StatusInternalServerError, "Unable to cancel sessions.")
 		return
 	}
-	// Monitor Basic Auth is independent of Ref Ledger sessions.
+	// Monitor administrator sessions are independent of Ref Ledger sessions.
 	currentCancelled := false
 	adminUsersJSON(w, http.StatusOK, map[string]interface{}{
 		"message":        fmt.Sprintf("Cancelled %d session(s). User data was preserved.", result.DeletedCount),
@@ -252,7 +253,7 @@ func (app *Application) adminUsersDelete(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 	db := app.db
 	// Include every ordinary collection, including future tenant-owned collections.
@@ -268,6 +269,40 @@ func (app *Application) adminUsersDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer transaction.EndSession(context.Background())
+	// Validate the destructive target before contacting Auth0. Never select an
+	// Auth0 identity by email: different connections can share an email address.
+	target, err := app.adminUsersTarget(ctx, action.UserID)
+	if err != nil {
+		adminUsersError(w, http.StatusNotFound, "Unable to load user. Refresh before retrying.")
+		return
+	}
+	if target.TenantID == "" || strings.TrimSpace(target.TenantID) != target.TenantID || target.TenantID == "na" || target.TenantID == "anonymous" || action.ConfirmationUsername != target.Username {
+		adminUsersError(w, http.StatusBadRequest, "Deletion stopped: invalid tenant or email confirmation.")
+		return
+	}
+	count, err := db.Collection("users").CountDocuments(ctx, bson.M{"tenantId": target.TenantID})
+	if err != nil || count != 1 {
+		adminUsersError(w, http.StatusConflict, "Deletion stopped: unable to confirm a single-user tenant.")
+		return
+	}
+	// A stored identity must not be shared by another local account.
+	identityCount, err := db.Collection("users").CountDocuments(ctx, bson.M{
+		"mobileIdentity.issuer":  target.MobileIdentity.Issuer,
+		"mobileIdentity.subject": target.MobileIdentity.Subject,
+	})
+	if err != nil || identityCount != 1 {
+		adminUsersError(w, http.StatusConflict, "Deletion stopped: Auth0 identity is missing, shared, or could not be verified.")
+		return
+	}
+	auth0, err := newAdminAuth0Client(target.MobileIdentity)
+	if err != nil {
+		adminUsersError(w, http.StatusServiceUnavailable, "Nothing was deleted: "+err.Error())
+		return
+	}
+	if err := auth0.deleteIdentity(ctx, target.MobileIdentity.Subject); err != nil {
+		adminUsersError(w, http.StatusBadGateway, "MongoDB account retained. "+err.Error())
+		return
+	}
 	txnOptions := options.Transaction().SetReadConcern(readconcern.Snapshot()).SetWriteConcern(writeconcern.Majority())
 	var deleted map[string]int64
 	_, err = transaction.WithTransaction(ctx, func(sc mongo.SessionContext) (interface{}, error) {
@@ -275,6 +310,9 @@ func (app *Application) adminUsersDelete(w http.ResponseWriter, r *http.Request)
 		user, err := app.adminUsersTarget(sc, action.UserID)
 		if err != nil {
 			return nil, err
+		}
+		if user.Username != target.Username || user.TenantID != target.TenantID || user.MobileIdentity != target.MobileIdentity {
+			return nil, errors.New("account identity changed during deletion")
 		}
 		if user.TenantID == "" || strings.TrimSpace(user.TenantID) != user.TenantID || user.TenantID == "na" || user.TenantID == "anonymous" {
 			return nil, errAdminInvalidTenant
@@ -316,23 +354,12 @@ func (app *Application) adminUsersDelete(w http.ResponseWriter, r *http.Request)
 		return nil, nil
 	}, txnOptions)
 	if err != nil {
-		switch {
-		case errors.Is(err, errAdminSharedTenant):
-			adminUsersError(w, http.StatusConflict, "Deletion stopped: multiple users share this tenant. No data was deleted.")
-		case errors.Is(err, errAdminDeleteConfirmation):
-			adminUsersError(w, http.StatusBadRequest, "Enter the selected user's exact email address to confirm.")
-		case errors.Is(err, errAdminInvalidTenant):
-			adminUsersError(w, http.StatusConflict, "Deletion stopped: this account has an invalid tenant ID.")
-		case errors.Is(err, mongo.ErrNoDocuments):
-			adminUsersError(w, http.StatusNotFound, "User not found. Refresh the table.")
-		default:
-			log.Printf("admin account deletion failed: %v", err)
-			adminUsersError(w, http.StatusInternalServerError,
-				"Account deletion could not be confirmed. Refresh before retrying. MongoDB must support transactions (replica set or Atlas).")
-		}
+		log.Printf("admin account deletion: Auth0 removed; MongoDB cleanup failed: %v", err)
+		adminUsersError(w, http.StatusInternalServerError,
+			"Auth0 identity removed, but MongoDB cleanup could not be confirmed. Refresh and retry deletion. If the account or tenant changed, review it before retrying. MongoDB must support transactions (replica set or Atlas).")
 		return
 	}
 	adminUsersJSON(w, http.StatusOK, map[string]interface{}{
-		"message": "The user, all tenant records, and sessions were deleted.", "deletedCounts": deleted,
+		"message": "The Auth0 identity, MongoDB user, tenant records, and sessions were deleted.", "deletedCounts": deleted,
 	})
 }

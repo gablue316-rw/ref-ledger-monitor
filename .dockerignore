@@ -1,0 +1,14 @@
+# Local configuration and generated artifacts never belong in the build context.
+.git
+.env
+.env.*
+!.env.example
+*.exe
+*.zip
+*.bkup
+*.before-logout
+*.before-session-tests
+update-admin-session-tests.py
+bin/
+dist/
+node_modules/
