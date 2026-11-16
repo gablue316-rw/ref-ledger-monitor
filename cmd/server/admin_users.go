@@ -23,6 +23,8 @@ import (
 )
 
 type adminUserRecord struct {
+	Version        string `bson:"-" json:"version"`
+	raw            bson.Raw
 	MobileIdentity adminAuth0Identity `bson:"mobileIdentity" json:"-"`
 	ID             primitive.ObjectID `bson:"_id" json:"id"`
 	Username       string             `bson:"username" json:"username"`
@@ -47,10 +49,6 @@ type adminUserAction struct {
 	SessionID            string `json:"sessionId"`
 	AllSessions          bool   `json:"allSessions"`
 	ConfirmationUsername string `json:"confirmationUsername"`
-}
-
-func adminUserProjection() bson.M {
-	return bson.M{"_id": 1, "username": 1, "name": 1, "tenantId": 1, "role": 1, "mobileIdentity": 1}
 }
 
 func adminUsersJSON(w http.ResponseWriter, status int, body interface{}) {
@@ -96,6 +94,7 @@ func adminUsersDecode(w http.ResponseWriter, r *http.Request) (adminUserAction, 
 }
 
 func (app *Application) adminUsersSearch(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if !adminUsersMethod(w, r, http.MethodGet) {
 		return
 	}
@@ -126,7 +125,7 @@ func (app *Application) adminUsersSearch(w http.ResponseWriter, r *http.Request)
 	db := app.db
 	const pageSize int64 = 50
 	cursor, err := db.Collection("users").Find(ctx, filter, options.Find().
-		SetProjection(adminUserProjection()).SetSort(bson.D{{Key: "username", Value: 1}, {Key: "_id", Value: 1}}).
+		SetSort(bson.D{{Key: "username", Value: 1}, {Key: "_id", Value: 1}}).
 		SetSkip(offset).SetLimit(pageSize+1))
 	if err != nil {
 		log.Printf("admin users search: %v", err)
@@ -194,7 +193,7 @@ func (app *Application) adminUsersTarget(ctx context.Context, id string) (adminU
 		return user, mongo.ErrNoDocuments
 	}
 	err = app.db.Collection("users").FindOne(
-		ctx, bson.M{"_id": objectID}, options.FindOne().SetProjection(adminUserProjection()),
+		ctx, bson.M{"_id": objectID},
 	).Decode(&user)
 	return user, err
 }
@@ -212,15 +211,23 @@ func (app *Application) adminUsersCancelSessions(w http.ResponseWriter, r *http.
 		adminUsersError(w, http.StatusBadRequest, "Choose one session or explicitly choose all sessions.")
 		return
 	}
+	version, ok := adminRequireVersion(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	user, err := app.adminUsersTarget(ctx, action.UserID)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		adminUsersError(w, http.StatusNotFound, "User not found. Refresh the table.")
+		adminConflict(w, errAdminConflict)
 		return
 	}
 	if err != nil {
 		adminUsersError(w, http.StatusInternalServerError, "Unable to load the selected user.")
+		return
+	}
+	if user.Version != version {
+		adminConflict(w, errAdminConflict)
 		return
 	}
 	filter := bson.M{"username": user.Username, "tenantId": user.TenantID}
@@ -253,6 +260,10 @@ func (app *Application) adminUsersDelete(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	version, ok := adminRequireVersion(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 	db := app.db
@@ -273,7 +284,14 @@ func (app *Application) adminUsersDelete(w http.ResponseWriter, r *http.Request)
 	// Auth0 identity by email: different connections can share an email address.
 	target, err := app.adminUsersTarget(ctx, action.UserID)
 	if err != nil {
-		adminUsersError(w, http.StatusNotFound, "Unable to load user. Refresh before retrying.")
+		if adminConflict(w, err) {
+			return
+		}
+		adminUsersError(w, http.StatusInternalServerError, "Unable to load user. Refresh before retrying.")
+		return
+	}
+	if target.Version != version {
+		adminConflict(w, errAdminConflict)
 		return
 	}
 	if target.TenantID == "" || strings.TrimSpace(target.TenantID) != target.TenantID || target.TenantID == "na" || target.TenantID == "anonymous" || action.ConfirmationUsername != target.Username {
@@ -311,6 +329,9 @@ func (app *Application) adminUsersDelete(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			return nil, err
 		}
+		if user.Version != version {
+			return nil, errAdminConflict
+		}
 		if user.Username != target.Username || user.TenantID != target.TenantID || user.MobileIdentity != target.MobileIdentity {
 			return nil, errors.New("account identity changed during deletion")
 		}
@@ -343,7 +364,7 @@ func (app *Application) adminUsersDelete(w http.ResponseWriter, r *http.Request)
 			}
 			deleted[collection] = result.DeletedCount
 		}
-		result, err := db.Collection("users").DeleteOne(sc, bson.M{"_id": user.ID, "tenantId": user.TenantID})
+		result, err := db.Collection("users").DeleteOne(sc, adminSnapshotFilter(user.raw))
 		if err != nil {
 			return nil, err
 		}

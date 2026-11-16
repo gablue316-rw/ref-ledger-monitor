@@ -134,6 +134,10 @@ func (app *Application) adminRoleHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	version, ok := adminRequireVersion(w, r)
+	if !ok {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 
@@ -170,10 +174,7 @@ func (app *Application) adminRoleHandler(w http.ResponseWriter, r *http.Request)
 				return nil, err
 			}
 
-			var user struct {
-				Username string `bson:"username"`
-				TenantID string `bson:"tenantId"`
-			}
+			var user adminUserRecord
 
 			err = db.Collection("users").FindOne(
 				tx,
@@ -187,9 +188,12 @@ func (app *Application) adminRoleHandler(w http.ResponseWriter, r *http.Request)
 				return nil, err
 			}
 
-			_, err = db.Collection("users").UpdateOne(
+			if user.Version != version {
+				return nil, errAdminConflict
+			}
+			result, err := db.Collection("users").UpdateOne(
 				tx,
-				bson.M{"_id": userID},
+				adminSnapshotFilter(user.raw),
 				bson.M{
 					"$set": bson.M{
 						"role": request.Role,
@@ -198,6 +202,10 @@ func (app *Application) adminRoleHandler(w http.ResponseWriter, r *http.Request)
 			)
 			if err != nil {
 				return nil, err
+			}
+
+			if result.MatchedCount != 1 {
+				return nil, errAdminConflict
 			}
 
 			// Existing sessions contain the old role.
@@ -218,12 +226,15 @@ func (app *Application) adminRoleHandler(w http.ResponseWriter, r *http.Request)
 	)
 
 	switch {
+	case errors.Is(err, errAdminConflict):
+		adminConflict(w, err)
+		return
 	case errors.Is(err, invalidRole):
 		writeError(http.StatusBadRequest, "Selected role is not active or does not exist")
 		return
 
 	case errors.Is(err, userNotFound):
-		writeError(http.StatusNotFound, "User not found")
+		adminConflict(w, errAdminConflict)
 		return
 
 	case err != nil:
@@ -327,6 +338,10 @@ func (app *Application) adminPasswordHandler(
 		return
 	}
 
+	version, ok := adminRequireVersion(w, r)
+	if !ok {
+		return
+	}
 	passwordHash, err := bcrypt.GenerateFromPassword(
 		[]byte(payload.NewPassword),
 		bcrypt.DefaultCost,
@@ -345,11 +360,17 @@ func (app *Application) adminPasswordHandler(
 	)
 	defer cancel()
 
+	filter, err := adminConditionalFilter(ctx, app.db.Collection("users"), bson.M{"_id": userID}, version)
+	if err != nil {
+		if adminConflict(w, err) {
+			return
+		}
+		writeError(500, "Unable to verify user.")
+		return
+	}
 	result, err := app.db.Collection("users").UpdateOne(
 		ctx,
-		bson.M{
-			"_id": userID,
-		},
+		filter,
 		bson.M{
 			"$set": bson.M{
 				"passwordHash": string(passwordHash),
@@ -366,7 +387,7 @@ func (app *Application) adminPasswordHandler(
 	}
 
 	if result.MatchedCount == 0 {
-		writeError(http.StatusNotFound, "User not found.")
+		adminConflict(w, errAdminConflict)
 		return
 	}
 

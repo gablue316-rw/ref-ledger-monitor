@@ -39,12 +39,13 @@
       );
     return data;
   }
-  function post(path, payload) {
+  function post(path, payload, version) {
     return request(path, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Ref-Ledger-Admin": "1",
+        ...(version ? {"If-Match": version} : {}),
       },
       body: JSON.stringify(payload),
     });
@@ -405,7 +406,7 @@
     updateConfirm();
     $("dialogError").textContent = "";
     try {
-      const result = await post("api/admin/users/" + path, payload);
+      const result = await post("api/admin/users/" + path, payload, a.user.version);
       actionBusy = false;
       $("adminDialog").close();
       $("userMessage").textContent = result.message || "Action completed.";
@@ -437,6 +438,7 @@
     roleBusy = false,
     roleSport = "",
     drafts = new Map(),
+    roleVersions = new Map(),
     roleRequest = 0;
   function catalogLocks() {
     const locked = sportBusy || roleBusy;
@@ -456,6 +458,7 @@
       if (!Array.isArray(list)) throw Error("Invalid sports catalog response.");
       sports = list.map((s) => ({
         id: s.id ?? s.ID ?? "",
+        version: s.version ?? "",
         name: s.name ?? s.Name ?? "",
         active: s.active ?? s.Active ?? false,
       }));
@@ -522,55 +525,32 @@
   };
   async function changeSport(s, kind) {
     if (sportBusy || roleBusy) return;
-    if (
-      kind === "delete" &&
-      !window.confirm(
-        `Permanently delete ${s.name} and its official role settings? This cannot be undone.`,
-      )
-    )
-      return;
     sportBusy = true;
     catalogLocks();
     try {
       if (kind === "toggle") {
         await post("api/sport-" + (s.active ? "inactive" : "active"), {
-          id: s.id,
-          name: s.name,
-        });
+          id: s.id, name: s.name,
+        }, s.version);
         notice(s.name + " is now " + (s.active ? "inactive." : "active."));
       } else {
-        await request("api/sports?" + new URLSearchParams({ id: s.id }), {
+        // Capture role settings before confirmation; never use a later refreshed
+        // token to delete settings the administrator did not confirm.
+        const roleState = await rolesRequest("api/settings/official-roles?" + new URLSearchParams({sport: s.name}));
+        if (!roleState.version) throw Error("Reload role settings before deleting this sport.");
+        if (!window.confirm(`Permanently delete ${s.name} and its official role settings? This cannot be undone.`)) return;
+        await request("api/sports?" + new URLSearchParams({id: s.id}), {
           method: "DELETE",
+          headers: {"If-Match": s.version || "", "X-Ref-Ledger-Roles-Version": roleState.version},
         });
-        let cleanup = "";
-        try {
-          await rolesRequest(
-            "api/settings/official-roles?" +
-              new URLSearchParams({ sport: s.name }),
-            { method: "DELETE" },
-          );
-        } catch (error) {
-          cleanup = error.message;
-        }
         drafts.delete(s.name);
-        if (roleSport === s.name) {
-          roleSport = "";
-          ++roleRequest;
-        }
-        notice(
-          cleanup
-            ? `Sport deleted, but role cleanup failed: ${cleanup}`
-            : "Sport and role settings deleted.",
-          !!cleanup,
-        );
+        roleVersions.delete(s.name);
+        if (roleSport === s.name) { roleSport = ""; ++roleRequest; }
+        notice("Sport and role settings deleted.");
       }
       await loadSports();
-    } catch (error) {
-      notice(error.message, true);
-    } finally {
-      sportBusy = false;
-      catalogLocks();
-    }
+    } catch (error) { notice(error.message, true); }
+    finally { sportBusy = false; catalogLocks(); }
   }
   async function rolesRequest(path, options = {}) {
     return request(path, {
@@ -659,8 +639,9 @@
         "api/settings/official-roles?" + new URLSearchParams({ sport }),
       );
       if (seq !== roleRequest) return;
-      if (!Array.isArray(data.roles))
+      if (!Array.isArray(data.roles) || typeof data.version !== "string" || !data.version)
         throw Error("Invalid official roles response.");
+      roleVersions.set(sport, data.version);
       drafts.set(
         sport,
         data.roles
@@ -680,6 +661,13 @@
       }
     }
   };
+  $("reloadRoles").onclick = async () => {
+    if (!roleSport || roleBusy || sportBusy) return;
+    if (!window.confirm("Discard this sport's unsaved role changes and load its latest settings?")) return;
+    drafts.delete(roleSport);
+    roleVersions.delete(roleSport);
+    await $("roleSport").onchange();
+  };
   $("addRole").onclick = () => {
     if (!roleSport || roleBusy || sportBusy) return;
     const roles = drafts.get(roleSport);
@@ -691,6 +679,7 @@
   $("clearRoles").onclick = () => {
     if (roleBusy || sportBusy) return;
     drafts.delete(roleSport);
+    roleVersions.delete(roleSport);
     roleSport = "";
     ++roleRequest;
     $("roleSport").value = "";
@@ -721,12 +710,14 @@
     roleBusy = true;
     catalogLocks();
     try {
-      await rolesRequest("api/settings/official-roles", {
+      const result = await rolesRequest("api/settings/official-roles", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "If-Match": roleVersions.get(sport) || "" },
         body: JSON.stringify({ sport, roles }),
       });
-      drafts.set(sport, roles);
+      if (!result.version || !Array.isArray(result.roles)) throw Error("Settings were saved but their new version could not be verified. Reload roles before saving again.");
+      roleVersions.set(sport, result.version);
+      drafts.set(sport, result.roles);
       $("roleMessage").textContent = "Official roles saved for " + sport + ".";
     } catch (error) {
       $("roleMessage").textContent = error.message;
@@ -735,14 +726,17 @@
       renderRoles();
     }
   };
-  let maintenanceBusy = false;
+  let maintenanceBusy = false, maintenanceVersion = "";
   function maintenanceUnknown(message) {
+    maintenanceVersion = "";
     $("maintenanceStatus").textContent = message;
     $("maintenanceOn").disabled = true;
     $("maintenanceOff").disabled = true;
     $("maintenanceChecked").textContent = "Status unverified. Refresh before starting a backup.";
   }
   function showMaintenance(data) {
+    if (typeof data.version !== "string" || !data.version) throw Error("Maintenance version is unavailable. Refresh before changing mode.");
+    maintenanceVersion = data.version;
     $("maintenanceStatus").textContent = !data.enabled
       ? "Maintenance OFF — application changes are enabled."
       : data.drained
@@ -762,10 +756,11 @@
     finally { maintenanceBusy = false; }
   }
   async function setMaintenance(enabled) {
-    if (maintenanceBusy) return;
+    if (maintenanceBusy || !maintenanceVersion) return;
+    const version = maintenanceVersion;
     maintenanceBusy = true;
     maintenanceUnknown("Changing maintenance mode…");
-    try { showMaintenance(await post("api/admin/maintenance", { enabled })); }
+    try { showMaintenance(await post("api/admin/maintenance", { enabled }, version)); }
     catch (error) { maintenanceUnknown(error.message); }
     finally { maintenanceBusy = false; }
   }

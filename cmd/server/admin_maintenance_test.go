@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
@@ -27,43 +28,55 @@ func TestMaintenanceStateAndToggle(t *testing.T) {
 		mt.Run("enable and drain", func(mt *mtest.T) {
 			app := testApp()
 			app.db = mt.DB
-			mt.AddMockResponses(adminSessionMock(mt), mtest.CreateSuccessResponse(), cursor(mt.DB.Name()+".system_control", bson.D{{Key: "enabled", Value: true}, {Key: "activeWrites", Value: active}}))
+			old := bson.D{{Key: "_id", Value: "maintenance"}, {Key: "enabled", Value: false}, {Key: "activeWrites", Value: active}}
+			next := bson.D{{Key: "_id", Value: "maintenance"}, {Key: "enabled", Value: true}, {Key: "activeWrites", Value: active}, {Key: "updatedAt", Value: time.Now().UTC()}}
+			mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".system_control", old), mtest.CreateSuccessResponse(bson.E{Key: "value", Value: next}))
+			raw, _ := bson.Marshal(old)
+			req := adminRequest("POST", "/api/admin/maintenance", `{"enabled":true}`)
+			req.Header.Set("If-Match", adminMaintenanceVersion(raw))
 			w := httptest.NewRecorder()
-			app.routes().ServeHTTP(w, adminRequest("POST", "/api/admin/maintenance", `{"enabled":true}`))
+			app.routes().ServeHTTP(w, req)
 			want := `"drained":false`
 			if active == 0 {
 				want = `"drained":true`
 			}
 			if w.Code != 200 || !strings.Contains(w.Body.String(), want) {
-				mt.Fatalf("%d %s", w.Code, w.Body.String())
+				mt.Fatalf("%d %s", w.Code, w.Body)
 			}
-			events := mt.GetAllStartedEvents()
-			var cmd bson.M
-			bson.Unmarshal(events[1].Command, &cmd)
-			update := cmd["updates"].(bson.A)[0].(bson.M)["u"].(bson.M)
-			if update["$set"].(bson.M)["activeWrites"] != nil {
-				mt.Fatal("toggle overwrites active writers")
+			command := mt.GetAllStartedEvents()[2].Command
+			update := command.Lookup("update").Document().Lookup("$set").Document()
+			if update.Lookup("activeWrites").Type != 0 {
+				mt.Fatal("toggle overwrites active writer count")
+			}
+			predicate := command.Lookup("query").Document()
+			if predicate.Lookup("$expr").Type == 0 || strings.Contains(predicate.String(), "activeWrites") {
+				mt.Fatal("missing settings preconditions")
 			}
 		})
 	}
 	mt.Run("disable works while locked", func(mt *mtest.T) {
 		app := testApp()
 		app.db = mt.DB
-		mt.AddMockResponses(adminSessionMock(mt), mtest.CreateSuccessResponse(), cursor(mt.DB.Name()+".system_control", bson.D{{Key: "enabled", Value: false}, {Key: "activeWrites", Value: int64(0)}}))
+		old := bson.D{{Key: "_id", Value: "maintenance"}, {Key: "enabled", Value: true}, {Key: "activeWrites", Value: int64(0)}}
+		next := bson.D{{Key: "_id", Value: "maintenance"}, {Key: "enabled", Value: false}, {Key: "activeWrites", Value: int64(0)}, {Key: "updatedAt", Value: time.Now().UTC()}}
+		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".system_control", old), mtest.CreateSuccessResponse(bson.E{Key: "value", Value: next}))
+		raw, _ := bson.Marshal(old)
+		req := adminRequest("POST", "/api/admin/maintenance", `{"enabled":false}`)
+		req.Header.Set("If-Match", adminMaintenanceVersion(raw))
 		w := httptest.NewRecorder()
-		app.routes().ServeHTTP(w, adminRequest("POST", "/api/admin/maintenance", `{"enabled":false}`))
+		app.routes().ServeHTTP(w, req)
 		if w.Code != 200 || !strings.Contains(w.Body.String(), `"enabled":false`) {
-			mt.Fatalf("%d %s", w.Code, w.Body.String())
+			mt.Fatalf("%d %s", w.Code, w.Body)
 		}
 	})
 	mt.Run("origin protection", func(mt *mtest.T) {
 		app := testApp()
 		app.db = mt.DB
 		mt.AddMockResponses(adminSessionMock(mt))
-		r := adminRequest("POST", "/api/admin/maintenance", `{"enabled":true}`)
-		r.Header.Set("Origin", "https://attacker.example")
+		req := adminRequest("POST", "/api/admin/maintenance", `{"enabled":true}`)
+		req.Header.Set("Origin", "https://attacker.example")
 		w := httptest.NewRecorder()
-		app.routes().ServeHTTP(w, r)
+		app.routes().ServeHTTP(w, req)
 		if w.Code != 403 {
 			mt.Fatal(w.Code)
 		}
