@@ -1396,37 +1396,6 @@
                 }
                 $("rl-user-total").replaceChildren(tableRow(total, true));
               }
-              $("rl-about-open").onclick = async () => {
-                const button = $("rl-about-open"),
-                  dialog = $("rl-about-dialog"),
-                  status = $("rl-about-status");
-                status.textContent = "Loading version…";
-                dialog.showModal();
-                button.disabled = true;
-                try {
-                  const response = await fetch(adminURL("api/about"), {
-                    credentials: "same-origin",
-                    cache: "no-store",
-                    headers: { Accept: "application/json" },
-                    signal: AbortSignal.timeout(8000),
-                  });
-                  if (!response.ok) throw new Error("HTTP " + response.status);
-                  const data = await response.json();
-                  if (
-                    typeof data.version !== "string" ||
-                    data.version.trim() === ""
-                  )
-                    throw new Error("Invalid version response");
-                  status.textContent = "Version: " + data.version;
-                } catch (error) {
-                  status.textContent =
-                    "Unable to load the version (" +
-                    error.message +
-                    "). Close and reopen to retry.";
-                } finally {
-                  button.disabled = false;
-                }
-              };
               // Metrics are grouped by tenantId. The API must also return username.
               function username(user) {
                 return typeof user.username === "string"

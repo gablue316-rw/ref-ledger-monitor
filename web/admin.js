@@ -94,7 +94,32 @@
     .querySelectorAll("[data-page]")
     .forEach((b) => (b.onclick = () => (location.hash = b.dataset.page)));
   window.addEventListener("hashchange", navigate);
-  $("shellAbout").onclick = () => $("rl-about-open").click();
+  // The About dialog lives outside the Metrics subtree so it is available on
+  // every administration page. Resolve it with the shell's document-level $.
+  async function openAbout() {
+    const dialog = $("rl-about-dialog"), status = $("rl-about-status");
+    if (!dialog || !status) {
+      notice("The About dialog is unavailable. Reload this page and try again.", true);
+      return;
+    }
+    if (dialog.open) return;
+    const buttons = [$("shellAbout"), $("rl-about-open")].filter(Boolean);
+    status.textContent = "Loading version…";
+    try {
+      dialog.showModal();
+      buttons.forEach(button => button.disabled = true);
+      const data = await request("api/about");
+      if (typeof data.version !== "string" || !data.version.trim())
+        throw Error("Invalid version response");
+      status.textContent = "Version: " + data.version.trim();
+    } catch (error) {
+      status.textContent = "Unable to load the version (" + error.message + "). Close and reopen to retry.";
+    } finally {
+      buttons.forEach(button => button.disabled = false);
+    }
+  }
+  $("shellAbout").onclick = openAbout;
+  $("rl-about-open").onclick = openAbout;
   let users = [],
     offset = 0,
     hasMore = false,
