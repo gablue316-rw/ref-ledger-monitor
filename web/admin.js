@@ -64,9 +64,14 @@
       "Sports & roles",
       "Manage the shared sports catalog and officiating roles.",
     ],
+    logs: [
+      "Ref Ledger logs",
+      "Search, export, and manage Ref Ledger structured logs.",
+    ],
   };
   let userStarted = false,
-    sportsStarted = false;
+    sportsStarted = false,
+    logsStarted = false;
   function navigate() {
     let page = location.hash.slice(1);
     if (!names[page]) page = "metrics";
@@ -89,11 +94,273 @@
       sportsStarted = true;
       loadSports();
     }
+    if (page === "logs" && !logsStarted) {
+      logsStarted = true;
+      $("logsTimeZone").value =
+        Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      loadLogThreshold();
+      loadLogs(true);
+    }
   }
   document
     .querySelectorAll("[data-page]")
     .forEach((b) => (b.onclick = () => (location.hash = b.dataset.page)));
   window.addEventListener("hashchange", navigate);
+  let logsOffset = 0, logsHasMore = false, logsCutoff = "", logsBusy = false;
+  const logLevels = {1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"};
+  const logFilterFields = [
+    ["dateFrom", "logsDateFrom"], ["dateThrough", "logsDateThrough"],
+    ["timeAt", "logsTimeAt"], ["timeFrom", "logsTimeFrom"],
+    ["timeThrough", "logsTimeThrough"], ["timeZone", "logsTimeZone"],
+    ["level", "logsLevel"], ["collection", "logsCollection"],
+    ["tenantId", "logsTenant"], ["sessionId", "logsSession"],
+    ["transactionId", "logsTransaction"], ["userId", "logsUser"],
+  ];
+  function logFilters() {
+    const filters = {};
+    for (const [key, id] of logFilterFields) {
+      const value = $(id).value.trim();
+      if (value) filters[key] = key === "level" ? Number(value) : value;
+    }
+    if (filters.timeAt && (filters.timeFrom || filters.timeThrough))
+      throw Error("Choose a single time or a time range, not both.");
+    return filters;
+  }
+  async function loadLogThreshold() {
+    $("logsThresholdMessage").textContent = "Loading capture threshold…";
+    try {
+      const data = await request("api/admin/logs/threshold");
+      if (![1, 2, 3, 4].includes(data.threshold))
+        throw Error("Ref Ledger returned an invalid capture threshold.");
+      $("logsThreshold").value = String(data.threshold);
+      $("logsEnvironment").textContent = data.environment || "Unknown";
+      $("logsClearEnvironment").textContent = data.environment || "Unknown";
+      $("logsThresholdMessage").textContent =
+        `Effective threshold: ${logLevels[data.threshold]}.`;
+    } catch (error) {
+      $("logsThresholdMessage").textContent =
+        `Unable to load the capture threshold: ${error.message}`;
+      $("logsThresholdMessage").style.color = "#a32020";
+    }
+  }
+  async function loadLogs(reset) {
+    if (logsBusy) return;
+    logsBusy = true;
+    $("logsMessage").textContent = "Loading Ref Ledger logs…";
+    try {
+      if (reset) {
+        logsOffset = 0;
+        logsCutoff = "";
+      }
+      const params = new URLSearchParams(logFilters());
+      params.set("offset", String(logsOffset));
+      params.set("limit", "50");
+      if (logsCutoff) params.set("cutoff", logsCutoff);
+      const data = await request(`api/admin/logs/records?${params}`);
+      logsCutoff = data.cutoff;
+      logsHasMore = data.hasMore === true;
+      $("logsEnvironment").textContent = data.environment || "Unknown";
+      $("logsClearEnvironment").textContent = data.environment || "Unknown";
+      renderLogs(Array.isArray(data.items) ? data.items : []);
+      $("logsPage").textContent = data.items.length
+        ? `Showing ${logsOffset + 1}–${logsOffset + data.items.length}${logsHasMore ? " · more available" : ""} · cutoff ${logsCutoff}`
+        : "0 matching records";
+      $("logsMessage").textContent = data.items.length
+        ? `${data.items.length} record(s) · displayed in ${data.timeZone || "UTC"}`
+        : "No logs match these filters.";
+      $("logsMessage").style.color = "";
+    } catch (error) {
+      $("logsRows").replaceChildren();
+      $("logsMessage").textContent = `Unable to load logs: ${error.message}`;
+      $("logsMessage").style.color = "#a32020";
+      logsHasMore = false;
+    } finally {
+      logsBusy = false;
+      $("logsPrev").disabled = logsOffset === 0;
+      $("logsNext").disabled = !logsHasMore;
+    }
+  }
+  function renderLogs(items) {
+    const rows = $("logsRows");
+    rows.replaceChildren();
+    if (!items.length) {
+      const tr = el("tr", ""), td = el("td", "No logs match these filters.");
+      td.colSpan = 6;
+      tr.append(td);
+      rows.append(tr);
+      return;
+    }
+    for (const item of items) {
+      const tr = el("tr", "");
+      const date = new Date(item.timestamp);
+      const time = Number.isNaN(date.getTime())
+        ? "Invalid timestamp"
+        : date.toLocaleString(undefined, {timeZone: $("logsTimeZone").value || "UTC"});
+      const level = logLevels[item.level] || "UNKNOWN";
+      const first = el("td", `${time} [${level}]`);
+      first.style.whiteSpace = "nowrap";
+      tr.append(first, el("td", item.event || "—"), el("td", item.message || "—"));
+      tr.append(el("td", `${item.operation || "—"} / ${item.outcome || "—"}`));
+      tr.append(el("td", `tenant: ${item.tenantId || "—"} · user: ${item.userId || "—"}`));
+      const details = el("td", "");
+      details.append(el("div", `collection: ${item.collection || "—"}`));
+      if (item.transactionId) {
+        const drill = el("button", item.transactionId, "btn");
+        drill.type = "button";
+        drill.onclick = () => drillIntoTransaction(item.transactionId);
+        details.append(drill);
+      }
+      const structured = {
+        sessionId: item.sessionId, mongoId: item.mongoId,
+        errorCategory: item.errorCategory, driverCode: item.driverCode,
+        elapsedMs: item.elapsedMs, attributes: item.attributes,
+      };
+      details.append(el("pre", JSON.stringify(structured, null, 2) || "{}"));
+      tr.append(details);
+      rows.append(tr);
+    }
+  }
+  function drillIntoTransaction(transactionId) {
+    for (const [, id] of logFilterFields) $(id).value = "";
+    $("logsTimeZone").value =
+      Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    $("logsTransaction").value = transactionId;
+    loadLogs(true);
+  }
+  $("logsFilters").onsubmit = (event) => {
+    event.preventDefault();
+    loadLogs(true);
+  };
+  $("logsClearFilters").onclick = () => {
+    for (const [, id] of logFilterFields) $(id).value = "";
+    $("logsTimeZone").value =
+      Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    loadLogs(true);
+  };
+  $("logsRefresh").onclick = () => {
+    loadLogThreshold();
+    loadLogs(true);
+  };
+  $("logsPrev").onclick = () => {
+    logsOffset = Math.max(0, logsOffset - 50);
+    loadLogs(false);
+  };
+  $("logsNext").onclick = () => {
+    if (logsHasMore) {
+      logsOffset += 50;
+      loadLogs(false);
+    }
+  };
+  $("logsThresholdForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const button = $("logsThresholdForm").querySelector("button");
+    button.disabled = true;
+    $("logsThresholdMessage").textContent = "Saving capture threshold…";
+    $("logsThresholdMessage").style.color = "";
+    try {
+      const data = await request("api/admin/logs/threshold", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Ref-Ledger-Admin": "1",
+        },
+        body: JSON.stringify({threshold: Number($("logsThreshold").value)}),
+      });
+      $("logsThresholdMessage").textContent =
+        `Saved ${logLevels[data.threshold]} for ${data.environment}.`;
+    } catch (error) {
+      const failure = error.message;
+      await loadLogThreshold();
+      $("logsThresholdMessage").textContent =
+        `Failed to save capture threshold: ${failure}. Effective threshold: ${logLevels[$("logsThreshold").value] || "unavailable"}.`;
+      $("logsThresholdMessage").style.color = "#a32020";
+    } finally {
+      button.disabled = false;
+    }
+  };
+  async function exportLogs(all, filters) {
+    $("logsMessage").textContent = "Preparing JSON Lines export…";
+    $("logsMessage").style.color = "";
+    try {
+      const response = await fetch(adminURL("api/admin/logs/export"), {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Ref-Ledger-Admin": "1",
+        },
+        body: JSON.stringify({all, filters}),
+        signal: AbortSignal.timeout(300000),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        let detail = text;
+        try { const data = JSON.parse(text); detail = data.message || data.error || text; } catch {}
+        throw Error(detail || `HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const expected = Number(response.headers.get("X-Log-Export-Count"));
+      const archive = await blob.text();
+      const exported = archive.length ? archive.trimEnd().split(/\r?\n/).length : 0;
+      if (!Number.isFinite(expected) || exported !== expected)
+        throw Error(`Incomplete export: received ${exported} of ${Number.isFinite(expected) ? expected : "unknown"} records.`);
+      const url = URL.createObjectURL(blob), link = document.createElement("a");
+      link.href = url;
+      link.download = "ref-ledger-logs.jsonl";
+      link.click();
+      URL.revokeObjectURL(url);
+      $("logsMessage").textContent =
+        `Export complete: ${exported} record(s), scope ${response.headers.get("X-Log-Export-Scope") || "environment"}, cutoff ${response.headers.get("X-Log-Export-Cutoff") || "server-defined"}.`;
+    } catch (error) {
+      $("logsMessage").textContent = `Log export failed: ${error.message}`;
+      $("logsMessage").style.color = "#a32020";
+    }
+  }
+  $("logsExportFiltered").onclick = () => {
+    try { exportLogs(false, logFilters()); }
+    catch (error) { $("logsMessage").textContent = error.message; }
+  };
+  $("logsExportAll").onclick = () => exportLogs(true, {});
+  $("logsClearOpen").onclick = () => {
+    $("logsClearPanel").hidden = false;
+    $("logsClearEnvironment").textContent = $("logsEnvironment").textContent;
+    $("logsClearTenant").value = "";
+    $("logsClearConfirmation").value = "";
+  };
+  $("logsClearCancel").onclick = () => { $("logsClearPanel").hidden = true; };
+  $("logsClearExport").onclick = () => {
+    exportLogs(false, {
+      tenantId: $("logsClearTenant").value.trim(),
+      timeZone: $("logsTimeZone").value || "UTC",
+    });
+  };
+  $("logsClearConfirm").onclick = async () => {
+    const environment = $("logsEnvironment").textContent;
+    if ($("logsClearConfirmation").value !== `CLEAR ${environment}`) {
+      $("logsMessage").textContent = `Type CLEAR ${environment} exactly to confirm.`;
+      $("logsMessage").style.color = "#a32020";
+      return;
+    }
+    const button = $("logsClearConfirm");
+    button.disabled = true;
+    try {
+      const result = await post("api/admin/logs/clear", {
+        confirmation: $("logsClearConfirmation").value,
+        tenantId: $("logsClearTenant").value.trim(),
+      });
+      $("logsMessage").textContent =
+        `Cleared ${result.deleted} record(s) in ${result.environment} through ${result.cutoff}.`;
+      $("logsMessage").style.color = "";
+      $("logsClearPanel").hidden = true;
+      loadLogs(true);
+    } catch (error) {
+      $("logsMessage").textContent = `Unable to clear logs: ${error.message}`;
+      $("logsMessage").style.color = "#a32020";
+    } finally {
+      button.disabled = false;
+    }
+  };
   // The About dialog lives outside the Metrics subtree so it is available on
   // every administration page. Resolve it with the shell's document-level $.
   async function openAbout() {

@@ -589,6 +589,7 @@
           <b>◉</b>Metrics</button
         ><button data-page="users"><b>♙</b>Users & sessions</button
         ><button data-page="catalog"><b>▦</b>Sports & roles</button>
+        <button data-page="logs"><b>≡</b>Ref Ledger logs</button>
         <button data-page="maintenance"><b>⚙</b>Maintenance</button>
       </nav>
       <div class="sidefoot">
@@ -1625,6 +1626,88 @@
             <button class="btn" id="prevUsers">Previous</button
             ><span id="userPage" class="small"></span
             ><button class="btn" id="nextUsers">Next</button>
+          </div>
+        </div>
+      </section>
+      <section class="page" id="logs" hidden>
+        <div class="panel" style="padding:20px">
+          <div class="panelhead">
+            <div>
+              <h2>Ref Ledger logs</h2>
+              <p>Records are owned and stored by Ref Ledger. Environment scope: <strong id="logsEnvironment">Loading…</strong></p>
+            </div>
+            <button class="btn" id="logsRefresh" type="button">Refresh</button>
+          </div>
+          <form id="logsThresholdForm" class="toolbar">
+            <label>Capture threshold
+              <select id="logsThreshold">
+                <option value="1">Error</option>
+                <option value="2">Warning</option>
+                <option value="3">Info</option>
+                <option value="4">Debug</option>
+              </select>
+            </label>
+            <button class="btn primary" type="submit">Save threshold</button>
+            <span class="small">Changes apply to future events across serving instances. Lowering capture does not hide retained Debug records from filtering.</span>
+          </form>
+          <p id="logsThresholdMessage" role="status" aria-live="polite"></p>
+        </div>
+        <form id="logsFilters" class="toolbar panel" style="padding:18px">
+          <label>Single date or range start<input id="logsDateFrom" type="date"></label>
+          <label>Inclusive range end<input id="logsDateThrough" type="date"></label>
+          <label>Single time<input id="logsTimeAt" type="time"></label>
+          <label>Time from<input id="logsTimeFrom" type="time"></label>
+          <label>Time through<input id="logsTimeThrough" type="time"></label>
+          <label>Displayed time zone<input id="logsTimeZone" required></label>
+          <label>Exact level
+            <select id="logsLevel">
+              <option value="">All stored levels</option>
+              <option value="1">Error</option>
+              <option value="2">Warning</option>
+              <option value="3">Info</option>
+              <option value="4">Debug</option>
+            </select>
+          </label>
+          <label>Collection<input id="logsCollection" maxlength="200"></label>
+          <label>Tenant ID<input id="logsTenant" maxlength="200"></label>
+          <label>Session ID<input id="logsSession" maxlength="200"></label>
+          <label>Transaction ID<input id="logsTransaction" maxlength="200"></label>
+          <label>User ID<input id="logsUser" maxlength="200"></label>
+          <button class="btn primary" type="submit">Search</button>
+          <button class="btn" id="logsClearFilters" type="button">Clear filters</button>
+          <span class="small">One selected date filters that full local day; two dates form an inclusive range. Time filters use the displayed time zone.</span>
+        </form>
+        <div class="panel">
+          <div class="panelhead">
+            <h2>Newest first</h2>
+            <div class="toolbar">
+              <button class="btn" id="logsExportFiltered" type="button">Export filtered JSONL</button>
+              <button class="btn" id="logsExportAll" type="button">Export all accessible JSONL</button>
+              <button class="btn" id="logsClearOpen" type="button">Clear logs…</button>
+            </div>
+          </div>
+          <p id="logsMessage" role="status" aria-live="polite" style="padding:0 20px"></p>
+          <div class="tablewrap" tabindex="0" aria-label="Ref Ledger log records">
+            <table>
+              <thead><tr><th>Timestamp / level</th><th>Event</th><th>Message</th><th>Operation / outcome</th><th>Tenant / user</th><th>Collection / details</th></tr></thead>
+              <tbody id="logsRows"></tbody>
+            </table>
+          </div>
+          <div class="toolbar" style="padding:0 20px">
+            <button class="btn" id="logsPrev" type="button">Previous</button>
+            <span id="logsPage" class="small"></span>
+            <button class="btn" id="logsNext" type="button">Next</button>
+          </div>
+        </div>
+        <div class="panel" id="logsClearPanel" hidden style="padding:20px;margin-top:16px">
+          <h2>Clear Ref Ledger logs</h2>
+          <p>Target environment: <strong id="logsClearEnvironment"></strong>. Clearing is scoped to the selected environment and optional tenant ID below. Export this scope first if you need an archive. Records arriving after the server cutoff are preserved.</p>
+          <label>Optional tenant ID (blank clears all accessible tenants)<input id="logsClearTenant" maxlength="200"></label>
+          <div class="toolbar">
+            <button class="btn" id="logsClearExport" type="button">Export this scope first</button>
+            <label>Type confirmation<input id="logsClearConfirmation" autocomplete="off"></label>
+            <button class="btn primary" id="logsClearConfirm" type="button">Confirm clear</button>
+            <button class="btn" id="logsClearCancel" type="button">Cancel</button>
           </div>
         </div>
       </section>
