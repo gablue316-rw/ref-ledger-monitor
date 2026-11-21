@@ -29,6 +29,7 @@ func (app *Application) routes() *http.ServeMux {
 	mux.HandleFunc("/readyz", app.requireAuth(app.readyHandler))
 	mux.HandleFunc("/api/about", app.requireAuth(app.aboutHandler))
 	mux.HandleFunc("/api/admin/maintenance", app.requireAuth(app.adminWrite(app.adminMaintenanceHandler)))
+	mux.HandleFunc(logsAdminThresholdPath, app.logsAdminThresholdHandler)
 	mux.HandleFunc(logsAdminMonitorPrefix, app.requireAuth(app.logsAdminProxy))
 	mux.HandleFunc(logsAdminMonitorPrefix+"/", app.requireAuth(app.adminWrite(app.logsAdminProxy)))
 	mux.HandleFunc("/api/metrics/last-minute", app.requireAuth(app.metricsHandler))
