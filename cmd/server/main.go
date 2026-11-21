@@ -61,15 +61,17 @@ import (
 // Defaults: https://ref-ledger.com,https://www.ref-ledger.com; direct request origin is also allowed.
 
 type Config struct {
-	MongoURI    string
-	MongoDBName string
-	Username    string
-	Password    string
-	Address     string
-	IndexFile   string
-	Environment string
-	PodName     string
-	Release     string
+	MongoURI       string
+	MongoDBName    string
+	Username       string
+	Password       string
+	Address        string
+	IndexFile      string
+	Environment    string
+	PodName        string
+	Release        string
+	LogsAdminURL   string
+	LogsAdminToken string
 }
 
 type Application struct {
@@ -130,7 +132,7 @@ func run() error {
 		Handler:           logRequests(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      6 * time.Minute,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
@@ -165,12 +167,22 @@ func run() error {
 
 func loadConfig() (Config, error) {
 	cfg := Config{
-		MongoDBName: strings.TrimSpace(os.Getenv("MONGODB_NAME")),
-		Username:    os.Getenv("MONITOR_USERNAME"),
-		Password:    os.Getenv("MONITOR_PASSWORD"),
-		Environment: envOrDefault("APP_ENV", "development"),
-		PodName:     envOrDefault("POD_NAME", "local-dev"),
-		Release:     envOrDefault("APP_RELEASE", "development"),
+		MongoDBName:    strings.TrimSpace(os.Getenv("MONGODB_NAME")),
+		Username:       os.Getenv("MONITOR_USERNAME"),
+		Password:       os.Getenv("MONITOR_PASSWORD"),
+		Environment:    envOrDefault("APP_ENV", "development"),
+		PodName:        envOrDefault("POD_NAME", "local-dev"),
+		Release:        envOrDefault("APP_RELEASE", "development"),
+		LogsAdminURL:   strings.TrimRight(strings.TrimSpace(os.Getenv("LOGS_ADMIN_API_URL")), "/"),
+		LogsAdminToken: strings.TrimSpace(os.Getenv("LOGS_ADMIN_API_TOKEN")),
+	}
+	if (cfg.LogsAdminURL == "") != (cfg.LogsAdminToken == "") {
+		return Config{}, errors.New("LOGS_ADMIN_API_URL and LOGS_ADMIN_API_TOKEN must be configured together")
+	}
+	if cfg.LogsAdminURL != "" {
+		if err := validateLogsAdminEndpoint(cfg.LogsAdminURL, cfg.LogsAdminToken, cfg.Environment); err != nil {
+			return Config{}, err
+		}
 	}
 
 	for _, required := range []struct {
