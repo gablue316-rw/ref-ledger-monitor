@@ -61,22 +61,21 @@ import (
 // Defaults: https://ref-ledger.com,https://www.ref-ledger.com; direct request origin is also allowed.
 
 type Config struct {
-	MongoURI       string
-	MongoDBName    string
-	Username       string
-	Password       string
-	Address        string
-	IndexFile      string
-	Environment    string
-	PodName        string
-	Release        string
-	LogsAdminURL   string
-	LogsAdminToken string
+	MongoURI    string
+	MongoDBName string
+	Username    string
+	Password    string
+	Address     string
+	IndexFile   string
+	Environment string
+	PodName     string
+	Release     string
 }
 
 type Application struct {
 	config Config
 	db     *mongo.Database
+	logs   *logsRepository
 }
 
 func main() {
@@ -124,6 +123,13 @@ func run() error {
 		config: cfg,
 		db:     client.Database(cfg.MongoDBName),
 	}
+	app.logs, err = configureLogsRepository()
+	if err != nil {
+		return err
+	}
+	if app.logs != nil {
+		defer app.logs.close()
+	}
 
 	mux := app.routes()
 
@@ -167,22 +173,12 @@ func run() error {
 
 func loadConfig() (Config, error) {
 	cfg := Config{
-		MongoDBName:    strings.TrimSpace(os.Getenv("MONGODB_NAME")),
-		Username:       os.Getenv("MONITOR_USERNAME"),
-		Password:       os.Getenv("MONITOR_PASSWORD"),
-		Environment:    envOrDefault("APP_ENV", "development"),
-		PodName:        envOrDefault("POD_NAME", "local-dev"),
-		Release:        envOrDefault("APP_RELEASE", "development"),
-		LogsAdminURL:   strings.TrimRight(strings.TrimSpace(os.Getenv("LOGS_ADMIN_API_URL")), "/"),
-		LogsAdminToken: strings.TrimSpace(os.Getenv("LOGS_ADMIN_API_TOKEN")),
-	}
-	if (cfg.LogsAdminURL == "") != (cfg.LogsAdminToken == "") {
-		return Config{}, errors.New("LOGS_ADMIN_API_URL and LOGS_ADMIN_API_TOKEN must be configured together")
-	}
-	if cfg.LogsAdminURL != "" {
-		if err := validateLogsAdminEndpoint(cfg.LogsAdminURL, cfg.LogsAdminToken, cfg.Environment); err != nil {
-			return Config{}, err
-		}
+		MongoDBName: strings.TrimSpace(os.Getenv("MONGODB_NAME")),
+		Username:    os.Getenv("MONITOR_USERNAME"),
+		Password:    os.Getenv("MONITOR_PASSWORD"),
+		Environment: envOrDefault("APP_ENV", "development"),
+		PodName:     envOrDefault("POD_NAME", "local-dev"),
+		Release:     envOrDefault("APP_RELEASE", "development"),
 	}
 
 	for _, required := range []struct {
