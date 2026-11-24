@@ -1640,15 +1640,16 @@
           </div>
           <form id="logsThresholdForm" class="toolbar">
             <label>Capture threshold
-              <select id="logsThreshold">
+              <select id="logsThreshold" disabled>
+                <option value="">Unavailable</option>
                 <option value="1">Error</option>
                 <option value="2">Warning</option>
                 <option value="3">Info</option>
                 <option value="4">Debug</option>
               </select>
             </label>
-            <button class="btn primary" type="submit">Save threshold</button>
-            <span class="small">Changes apply to future events across serving instances. Lowering capture does not hide retained Debug records from filtering.</span>
+            <button class="btn primary" type="submit" disabled>Save threshold</button>
+            <span class="small">Capture threshold changes are unavailable during Phase 1. Retained Debug records remain searchable.</span>
           </form>
           <p id="logsThresholdMessage" role="status" aria-live="polite"></p>
         </div>
@@ -1683,7 +1684,7 @@
             <div class="toolbar">
               <button class="btn" id="logsExportFiltered" type="button">Export filtered JSONL</button>
               <button class="btn" id="logsExportAll" type="button">Export all accessible JSONL</button>
-              <button class="btn" id="logsClearOpen" type="button">Clear logs…</button>
+              <button class="btn" id="logsClearOpen" type="button" disabled>Clear logs…</button>
             </div>
           </div>
           <p id="logsMessage" role="status" aria-live="polite" style="padding:0 20px"></p>
@@ -1706,7 +1707,7 @@
           <div class="toolbar">
             <button class="btn" id="logsClearExport" type="button">Export this scope first</button>
             <label>Type confirmation<input id="logsClearConfirmation" autocomplete="off"></label>
-            <button class="btn primary" id="logsClearConfirm" type="button">Confirm clear</button>
+            <button class="btn primary" id="logsClearConfirm" type="button" disabled>Confirm clear</button>
             <button class="btn" id="logsClearCancel" type="button">Cancel</button>
           </div>
         </div>

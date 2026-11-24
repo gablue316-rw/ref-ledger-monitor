@@ -128,6 +128,7 @@
   }
   async function loadLogThreshold() {
     $("logsThresholdMessage").textContent = "Loading capture threshold…";
+    $("logsThreshold").value = "";
     try {
       const data = await request("api/admin/logs/threshold");
       if (![1, 2, 3, 4].includes(data.threshold))
@@ -137,6 +138,7 @@
       $("logsClearEnvironment").textContent = data.environment || "Unknown";
       $("logsThresholdMessage").textContent =
         `Effective threshold: ${logLevels[data.threshold]}.`;
+      $("logsThresholdMessage").style.color = "";
     } catch (error) {
       $("logsThresholdMessage").textContent =
         `Unable to load the capture threshold: ${error.message}`;
@@ -253,30 +255,7 @@
   };
   $("logsThresholdForm").onsubmit = async (event) => {
     event.preventDefault();
-    const button = $("logsThresholdForm").querySelector("button");
-    button.disabled = true;
-    $("logsThresholdMessage").textContent = "Saving capture threshold…";
-    $("logsThresholdMessage").style.color = "";
-    try {
-      const data = await request("api/admin/logs/threshold", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Ref-Ledger-Admin": "1",
-        },
-        body: JSON.stringify({threshold: Number($("logsThreshold").value)}),
-      });
-      $("logsThresholdMessage").textContent =
-        `Saved ${logLevels[data.threshold]} for ${data.environment}.`;
-    } catch (error) {
-      const failure = error.message;
-      await loadLogThreshold();
-      $("logsThresholdMessage").textContent =
-        `Failed to save capture threshold: ${failure}. Effective threshold: ${logLevels[$("logsThreshold").value] || "unavailable"}.`;
-      $("logsThresholdMessage").style.color = "#a32020";
-    } finally {
-      button.disabled = false;
-    }
+    $("logsThresholdMessage").textContent = "Threshold changes are unavailable during Phase 1.";
   };
   async function exportLogs(all, filters) {
     $("logsMessage").textContent = "Preparing JSON Lines export…";
@@ -311,7 +290,7 @@
       link.click();
       URL.revokeObjectURL(url);
       $("logsMessage").textContent =
-        `Export complete: ${exported} record(s), scope ${response.headers.get("X-Log-Export-Scope") || "environment"}, cutoff ${response.headers.get("X-Log-Export-Cutoff") || "server-defined"}.`;
+        `Export complete: ${exported} record(s), scope ${response.headers.get("X-Log-Export-Scope") || "environment"}, cutoff ${response.headers.get("X-Log-Export-Cutoff") || "server-defined"}. Final audit status is unavailable here; check Monitor audit records.`;
     } catch (error) {
       $("logsMessage").textContent = `Log export failed: ${error.message}`;
       $("logsMessage").style.color = "#a32020";
@@ -322,12 +301,6 @@
     catch (error) { $("logsMessage").textContent = error.message; }
   };
   $("logsExportAll").onclick = () => exportLogs(true, {});
-  $("logsClearOpen").onclick = () => {
-    $("logsClearPanel").hidden = false;
-    $("logsClearEnvironment").textContent = $("logsEnvironment").textContent;
-    $("logsClearTenant").value = "";
-    $("logsClearConfirmation").value = "";
-  };
   $("logsClearCancel").onclick = () => { $("logsClearPanel").hidden = true; };
   $("logsClearExport").onclick = () => {
     exportLogs(false, {
@@ -335,31 +308,8 @@
       timeZone: $("logsTimeZone").value || "UTC",
     });
   };
-  $("logsClearConfirm").onclick = async () => {
-    const environment = $("logsEnvironment").textContent;
-    if ($("logsClearConfirmation").value !== `CLEAR ${environment}`) {
-      $("logsMessage").textContent = `Type CLEAR ${environment} exactly to confirm.`;
-      $("logsMessage").style.color = "#a32020";
-      return;
-    }
-    const button = $("logsClearConfirm");
-    button.disabled = true;
-    try {
-      const result = await post("api/admin/logs/clear", {
-        confirmation: $("logsClearConfirmation").value,
-        tenantId: $("logsClearTenant").value.trim(),
-      });
-      $("logsMessage").textContent =
-        `Cleared ${result.deleted} record(s) in ${result.environment} through ${result.cutoff}.`;
-      $("logsMessage").style.color = "";
-      $("logsClearPanel").hidden = true;
-      loadLogs(true);
-    } catch (error) {
-      $("logsMessage").textContent = `Unable to clear logs: ${error.message}`;
-      $("logsMessage").style.color = "#a32020";
-    } finally {
-      button.disabled = false;
-    }
+  $("logsClearConfirm").onclick = () => {
+    $("logsMessage").textContent = "Clearing logs is unavailable during Phase 1.";
   };
   // The About dialog lives outside the Metrics subtree so it is available on
   // every administration page. Resolve it with the shell's document-level $.
