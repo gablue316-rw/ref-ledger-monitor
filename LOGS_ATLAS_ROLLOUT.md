@@ -26,6 +26,14 @@ Set these server-side deployment secrets and settings together:
   and database as `LOGS_ENVIRONMENT` and `LOGS_DATABASE`. Monitor verifies the
   service's environment before each update; the API does not support an atomic
   environment precondition. Do not mix environments behind this origin.
+- `LOGS_COMMAND_MODE`: defaults to `https` (the existing threshold API). Set
+  explicitly to `atlas` to submit threshold and clear commands through Atlas.
+- `LOGS_COMMAND_URI`: required in Atlas mode. Use a third, dedicated Atlas
+  database user with TLS, connected to the same database and cluster as the
+  Ref Ledger command worker. Atlas mode ignores, but does not remove, the
+  existing `LOGS_ADMIN_URL` and `LOGS_ADMIN_TOKEN` settings. Set the mode back
+  to `https` to restore the previous path. `LOGS_READ_SETTINGS=true` is required
+  for threshold updates in either mode.
 
 Leaving all five required settings absent disables the feature. Partial
 configuration fails startup. In deployed environments the two connection
@@ -41,6 +49,36 @@ Create Atlas custom roles scoped to the intended database and collections:
 - Auditor: `insert` on `monitorLogExportAudit` only. This credential is
   separate from the reader and cannot modify or delete existing audit entries.
   Arrange retention, monitoring, and administrative review for this collection.
+- Atlas command user: `insert` and `find` on `refLedgerLogCommands` only.
+  Do not grant update or delete, or access to logs, settings, or audit history.
+  Treat this credential as privileged: the worker executes its valid commands.
+
+Enable the Ref Ledger worker separately using `REF_LEDGER_LOG_COMMANDS_ENABLED`
+and its explicit actor and tenant allowlists. Add each Monitor administrator's
+actor as `monitor-` followed by the lowercase SHA-256 hex digest of the session
+username to `REF_LEDGER_LOG_COMMAND_ACTORS`; put the clearable tenant IDs in
+`REF_LEDGER_LOG_COMMAND_TENANTS`. These values and `LOGS_ENVIRONMENT` must
+match the worker's environment and policy. A mismatch produces a rejected or
+permanently pending command. The worker requires an Atlas deployment supporting
+transactions; it applies each effect, command result, and Ref Ledger audit
+record in one transaction.
+
+The worker supports only one named tenant per clear, even when Monitor's
+`LOGS_TENANTS=*`; environment-wide or blank-tenant clears are not available.
+Monitor checks its configured tenant scope before submitting, and the worker
+independently enforces its own tenant allowlist. Review the environment, tenant
+and cutoff and optionally export that exact scope before confirming `CLEAR
+<environment>`. The export is a snapshot: late-arriving records with older
+timestamps may still be cleared. The worker does not delete audit history or
+records newer than the cutoff.
+
+Pending commands retain their request ID in the browser tab's session storage.
+After a timeout, check the original request or retry the same submission; do
+not start a new one while its outcome is unknown. A retry uses the same ID and
+cannot repeat a completed operation. If the tab is closed, recover the request
+ID and status from `refLedgerLogCommands` before submitting another command.
+Investigate pending commands and worker logs rather than assuming a timeout
+means failure.
 
 The server records a `started` and a final `success` or `failed` audit entry
 with a shared export ID. A missing final entry requires investigation; it can
@@ -70,11 +108,12 @@ the authenticated session username as the actor; Ref Ledger pseudonymizes it
 again for its audit record. An unsuccessful or timed-out request may still
 have changed the threshold; refresh the effective value before retrying.
 
-To roll back, remove all five required logs settings and both optional
-`LOGS_ADMIN_URL` and `LOGS_ADMIN_TOKEN` settings, then restart Monitor; the
-Logs routes then return a service-unavailable message. Keep the two existing
-Ref Ledger transport validation checks unchanged. Clearing remains disabled.
-Do not grant Monitor write or delete access to the log store.
+To disable the entire feature, remove all five required logs settings and the
+optional `LOGS_ADMIN_URL`, `LOGS_ADMIN_TOKEN`, `LOGS_COMMAND_MODE`, and
+`LOGS_COMMAND_URI` settings, then restart Monitor; the Logs routes then return
+a service-unavailable message. To disable only Atlas commands, switch to
+`https` or unset `LOGS_COMMAND_MODE`. Do not grant Monitor write or delete
+access to the log store.
 
 In development, verify a switch from Info to Debug and back to Info, refreshing
 after each save. Confirm newly emitted Debug entries are captured only while

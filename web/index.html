@@ -1691,6 +1691,9 @@
             <span class="small">Retained Debug records remain searchable after changing the capture threshold.</span>
           </form>
           <p id="logsThresholdMessage" role="status" aria-live="polite"></p>
+          <p id="logsCommandMessage" role="status" aria-live="polite"></p>
+          <button class="btn" id="logsCommandCheck" type="button" hidden>Check original request</button>
+          <button class="btn" id="logsCommandRetry" type="button" hidden>Retry original submission</button>
         </div>
         <form id="logsFilters" class="toolbar panel" style="padding:18px">
           <label>Single date or range start<input id="logsDateFrom" type="date"></label>
@@ -1741,8 +1744,8 @@
         </div>
         <div class="panel" id="logsClearPanel" hidden style="padding:20px;margin-top:16px">
           <h2>Clear Ref Ledger logs</h2>
-          <p>Target environment: <strong id="logsClearEnvironment"></strong>. Clearing is scoped to the selected environment and optional tenant ID below. Export this scope first if you need an archive. Records arriving after the server cutoff are preserved.</p>
-          <label>Optional tenant ID (blank clears all accessible tenants)<input id="logsClearTenant" maxlength="200"></label>
+          <p>Target environment: <strong id="logsClearEnvironment"></strong>. Authorized tenant scope: <strong id="logsClearScope"></strong>. Cutoff: <strong id="logsClearCutoff"></strong>. Only the specified tenant's records at or before the cutoff are cleared.</p>
+          <label>Tenant ID (required)<input id="logsClearTenant" maxlength="200"></label>
           <div class="toolbar">
             <button class="btn" id="logsClearExport" type="button">Export this scope first</button>
             <label>Type confirmation<input id="logsClearConfirmation" autocomplete="off"></label>

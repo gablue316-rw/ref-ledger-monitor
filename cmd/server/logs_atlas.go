@@ -102,7 +102,7 @@ func configureLogsRepository() (*logsRepository, error) {
 		}
 	}
 	newClient := func(uri string) (*mongo.Client, error) {
-		client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(uri).SetAppName("ref-ledger-monitor-logs").SetServerSelectionTimeout(5*time.Second).SetConnectTimeout(5*time.Second))
+		client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(uri).SetBSONOptions(&options.BSONOptions{DefaultDocumentM: true}).SetAppName("ref-ledger-monitor-logs").SetServerSelectionTimeout(5*time.Second).SetConnectTimeout(5*time.Second))
 		if err != nil {
 			return nil, errors.New("logs MongoDB client initialization failed")
 		}
@@ -318,6 +318,12 @@ func (app *Application) logsAtlasHandler(w http.ResponseWriter, r *http.Request)
 		app.logsRecordsAtlas(w, r)
 	case r.URL.Path == logsAdminMonitorPrefix+"/export" && r.Method == http.MethodPost:
 		app.logsExportAtlas(w, r)
+	case r.URL.Path == logsAdminMonitorPrefix+"/commands" && r.Method == http.MethodPost:
+		app.logsCommandSubmit(w, r)
+	case strings.HasPrefix(r.URL.Path, logsAdminMonitorPrefix+"/commands/") && r.Method == http.MethodGet:
+		app.logsCommandStatus(w, r)
+	case r.URL.Path == logsAdminMonitorPrefix+"/clear-scope" && r.Method == http.MethodGet:
+		app.logsClearScope(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -329,7 +335,7 @@ func (app *Application) logsThresholdAtlas(w http.ResponseWriter, r *http.Reques
 		adminUsersError(w, http.StatusServiceUnavailable, "Capture threshold is unavailable.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"threshold": threshold, "environment": app.logs.environment, "updateEnabled": app.logsUpdater != nil})
+	writeJSON(w, http.StatusOK, map[string]any{"threshold": threshold, "environment": app.logs.environment, "updateEnabled": app.logsUpdater != nil || app.logsCommands != nil, "commandMode": app.logsCommands != nil})
 }
 
 func (repo *logsRepository) captureThreshold(parent context.Context) (int, error) {
@@ -389,7 +395,7 @@ func (app *Application) logsRecordsAtlas(w http.ResponseWriter, r *http.Request)
 	if zone == "" {
 		zone = "UTC"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "hasMore": more, "cutoff": cutoff.Format(time.RFC3339Nano), "environment": app.logs.environment, "timeZone": zone})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "hasMore": more, "cutoff": cutoff.Format(time.RFC3339Nano), "environment": app.logs.environment, "timeZone": zone, "clearEnabled": app.logsCommands != nil})
 }
 
 func (repo *logsRepository) audit(actor, id, scope, outcome string) error {
@@ -406,6 +412,7 @@ func (app *Application) logsExportAtlas(w http.ResponseWriter, r *http.Request) 
 	var request struct {
 		All     bool     `json:"all"`
 		Filters logQuery `json:"filters"`
+		Cutoff  string   `json:"cutoff"`
 	}
 	if !decodeAdminJSON(w, r, &request) {
 		return
@@ -413,7 +420,11 @@ func (app *Application) logsExportAtlas(w http.ResponseWriter, r *http.Request) 
 	if request.All {
 		request.Filters = logQuery{}
 	}
-	cutoff, _ := logsCutoff("")
+	cutoff, err := logsCutoff(request.Cutoff)
+	if err != nil {
+		adminUsersError(w, http.StatusBadRequest, "Invalid log cutoff.")
+		return
+	}
 	filter, err := app.logs.filter(request.Filters, cutoff)
 	if err != nil {
 		adminUsersError(w, http.StatusBadRequest, "Invalid or unauthorized log filters.")
