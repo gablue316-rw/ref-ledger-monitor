@@ -38,6 +38,13 @@ type adminUserSession struct {
 	ExpiresAt time.Time `bson:"expiresAt" json:"expiresAt"`
 }
 
+type storedSession struct {
+	SessionID string    `bson:"sessionId"`
+	ExpiresAt time.Time `bson:"expiresAt"`
+	Username  string    `bson:"username"`
+	TenantID  string    `bson:"tenantId"`
+}
+
 type adminUserView struct {
 	adminUserRecord `bson:",inline"`
 	Sessions        []adminUserSession `json:"sessions"`
@@ -147,11 +154,6 @@ func (app *Application) adminUsersSearch(w http.ResponseWriter, r *http.Request)
 	for _, user := range users {
 		pairs = append(pairs, bson.M{"username": user.Username, "tenantId": user.TenantID})
 	}
-	type storedSession struct {
-		adminUserSession `bson:",inline"`
-		Username         string `bson:"username"`
-		TenantID         string `bson:"tenantId"`
-	}
 	sessionMap := make(map[string][]adminUserSession)
 	if len(pairs) > 0 {
 		sessionCursor, err := db.Collection("sessions").Find(ctx, bson.M{"$or": pairs}, options.Find().
@@ -169,7 +171,7 @@ func (app *Application) adminUsersSearch(w http.ResponseWriter, r *http.Request)
 		}
 		for _, session := range stored {
 			key := session.TenantID + "\x00" + session.Username
-			sessionMap[key] = append(sessionMap[key], session.adminUserSession)
+			sessionMap[key] = append(sessionMap[key], adminUserSession{SessionID: session.SessionID, ExpiresAt: session.ExpiresAt})
 		}
 	}
 	views := make([]adminUserView, 0, len(users))
