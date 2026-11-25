@@ -29,7 +29,7 @@ type logsCommand struct {
 	Environment       string    `bson:"environment" json:"environment"`
 	Type              string    `bson:"type" json:"type"`
 	Actor             string    `bson:"actor"`
-	Scope             string    `bson:"scope"`
+	Scope             string    `bson:"scope" json:"scope"`
 	TenantID          string    `bson:"tenantId" json:"tenantId"`
 	Threshold         int       `bson:"threshold" json:"threshold"`
 	Confirmation      string    `bson:"confirmation" json:"confirmation"`
@@ -125,6 +125,7 @@ func (app *Application) logsCommandSubmit(w http.ResponseWriter, r *http.Request
 		RequestID    string `json:"requestId"`
 		Environment  string `json:"environment"`
 		Type         string `json:"type"`
+		Scope        string `json:"scope"`
 		Threshold    int    `json:"threshold"`
 		TenantID     string `json:"tenantId"`
 		Confirmation string `json:"confirmation"`
@@ -142,18 +143,24 @@ func (app *Application) logsCommandSubmit(w http.ResponseWriter, r *http.Request
 		Actor: logsThresholdActor(actor), Type: input.Type, State: "pending"}
 	switch input.Type {
 	case "set_capture_threshold":
-		if !app.logs.settings || input.Threshold < 1 || input.Threshold > 4 || input.TenantID != "" || input.Confirmation != "" || input.Cutoff != "" {
+		if !app.logs.settings || input.Threshold < 1 || input.Threshold > 4 || input.Scope != "" || input.TenantID != "" || input.Confirmation != "" || input.Cutoff != "" {
 			adminUsersError(w, http.StatusBadRequest, "Invalid threshold command.")
 			return
 		}
 		command.Scope, command.Threshold = "environment", input.Threshold
 	case "clear_logs":
 		cutoff, err := logsCutoff(input.Cutoff)
-		if input.Cutoff == "" || err != nil || !app.logs.permitsCommandTenant(input.TenantID) || input.Confirmation != "CLEAR "+app.logs.environment || input.Threshold != 0 {
+		if input.Scope == "environment" && !app.logs.allTenants {
+			adminUsersError(w, http.StatusForbidden, "Environment-wide clearing is outside the authorized scope.")
+			return
+		}
+		validScope := input.Scope == "environment" && input.TenantID == "" ||
+			input.Scope == "tenant" && app.logs.permitsCommandTenant(input.TenantID)
+		if input.Cutoff == "" || err != nil || !validScope || input.Confirmation != "CLEAR "+app.logs.environment || input.Threshold != 0 {
 			adminUsersError(w, http.StatusBadRequest, "Invalid or unauthorized clear scope, cutoff, or confirmation.")
 			return
 		}
-		command.Scope, command.TenantID, command.Confirmation, command.Cutoff = "tenant", input.TenantID, input.Confirmation, cutoff.Truncate(time.Millisecond)
+		command.Scope, command.TenantID, command.Confirmation, command.Cutoff = input.Scope, input.TenantID, input.Confirmation, cutoff.Truncate(time.Millisecond)
 	default:
 		adminUsersError(w, http.StatusBadRequest, "Invalid command type.")
 		return

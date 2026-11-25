@@ -63,14 +63,26 @@ permanently pending command. The worker requires an Atlas deployment supporting
 transactions; it applies each effect, command result, and Ref Ledger audit
 record in one transaction.
 
-The worker supports only one named tenant per clear, even when Monitor's
-`LOGS_TENANTS=*`; environment-wide or blank-tenant clears are not available.
-Monitor checks its configured tenant scope before submitting, and the worker
-independently enforces its own tenant allowlist. Review the environment, tenant
-and cutoff and optionally export that exact scope before confirming `CLEAR
-<environment>`. The export is a snapshot: late-arriving records with older
-timestamps may still be cleared. The worker does not delete audit history or
-records newer than the cutoff.
+Monitor offers a named tenant clear, or an environment-wide clear only when
+`LOGS_TENANTS=*`. It rejects blank tenant IDs for tenant clears and enforces
+the configured scope before submission. Review the selected environment,
+scope and cutoff and optionally export that exact scope before confirming
+`CLEAR <environment>`. The export is a snapshot: late-arriving records with
+older timestamps may still be cleared.
+
+**Worker dependency:** Ref Ledger's `development` worker currently accepts
+only `clear_logs` with `scope: "tenant"` and an allowlisted `tenantId`. It
+rejects Monitor's environment-wide command (`scope: "environment"`, empty
+`tenantId`) as `invalid_scope`. Before enabling that choice operationally,
+update and deploy the worker to explicitly authorize environment-wide clears
+independently of Monitor (for example with an explicit actor allowlist), accept
+that scope only with an empty tenant ID, and keep rejecting blank tenant IDs
+for tenant scope. Its audit scope must distinguish environment-wide and tenant
+clears. The existing deletion helper filters by environment and cutoff and,
+for an empty tenant ID, includes tenantless server records; retain its
+transactional command result and audit behavior. Verify both scopes, newer
+records, other environments and audit history against the updated worker
+before rollout.
 
 Pending commands retain their request ID in the browser tab's session storage.
 After a timeout, check the original request or retry the same submission; do

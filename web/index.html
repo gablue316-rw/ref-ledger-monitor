@@ -1744,8 +1744,14 @@
         </div>
         <div class="panel" id="logsClearPanel" hidden style="padding:20px;margin-top:16px">
           <h2>Clear Ref Ledger logs</h2>
-          <p>Target environment: <strong id="logsClearEnvironment"></strong>. Authorized tenant scope: <strong id="logsClearScope"></strong>. Cutoff: <strong id="logsClearCutoff"></strong>. Only the specified tenant's records at or before the cutoff are cleared.</p>
-          <label>Tenant ID (required)<input id="logsClearTenant" maxlength="200"></label>
+          <p>Target environment: <strong id="logsClearEnvironment"></strong>. Authorized access: <strong id="logsClearScope"></strong>. Cutoff: <strong id="logsClearCutoff"></strong>. Records newer than the cutoff are preserved.</p>
+          <fieldset>
+            <legend>Choose what to clear</legend>
+            <label id="logsClearAllOption" hidden><input type="radio" name="logsClearScopeChoice" id="logsClearAll" value="environment"> All logs in this environment, including server logs without a tenant ID (requires worker support)</label>
+            <label><input type="radio" name="logsClearScopeChoice" id="logsClearByTenant" value="tenant" checked> By Tenant ID</label>
+            <label>Exact Tenant ID (required for By Tenant ID)<input id="logsClearTenant" maxlength="200"></label>
+          </fieldset>
+          <p>Selected scope: <strong id="logsClearSelectedScope"></strong> in environment <strong id="logsClearConfirmationEnvironment"></strong>.</p>
           <div class="toolbar">
             <button class="btn" id="logsClearExport" type="button">Export this scope first</button>
             <label>Type confirmation<input id="logsClearConfirmation" autocomplete="off"></label>

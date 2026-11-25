@@ -466,37 +466,53 @@
     try {
       clearScope = await request("api/admin/logs/clear-scope");
       $("logsClearEnvironment").textContent = clearScope.environment;
-      $("logsClearScope").textContent = clearScope.allTenants ? "all tenants (one tenant per command)" : (clearScope.tenants || []).join(", ");
+      $("logsClearScope").textContent = clearScope.allTenants ? "all tenants and server logs" : (clearScope.tenants || []).join(", ");
       $("logsClearCutoff").textContent = clearScope.cutoff;
       $("logsClearTenant").value = "";
+      $("logsClearAllOption").hidden = !clearScope.allTenants;
+      $("logsClearAll").checked = false;
+      $("logsClearByTenant").checked = true;
       $("logsClearConfirmation").value = "";
       $("logsClearConfirmation").placeholder = `CLEAR ${clearScope.environment}`;
+      $("logsClearConfirmationEnvironment").textContent = clearScope.environment;
+      updateClearSelection();
       $("logsClearPanel").hidden = false;
       $("logsClearConfirm").disabled = false;
     } catch (error) {
       $("logsMessage").textContent = `Unable to prepare clearing: ${error.message}`;
     }
   };
+  function updateClearSelection() {
+    const all = $("logsClearAll").checked;
+    const tenantId = $("logsClearTenant").value;
+    $("logsClearTenant").disabled = all;
+    $("logsClearSelectedScope").textContent = all
+      ? "All logs, including server logs without a tenant ID"
+      : tenantId ? `Tenant ID: ${tenantId}` : "By Tenant ID (enter an exact tenant ID)";
+    $("logsClearConfirmation").value = "";
+  }
+  $("logsClearAll").onchange = updateClearSelection;
+  $("logsClearByTenant").onchange = updateClearSelection;
+  $("logsClearTenant").oninput = updateClearSelection;
   $("logsClearCancel").onclick = () => { $("logsClearPanel").hidden = true; };
   $("logsClearExport").onclick = () => {
-    const tenantId = $("logsClearTenant").value.trim();
-    if (!clearScope || !tenantId) {
+    const all = $("logsClearAll").checked;
+    const tenantId = $("logsClearTenant").value;
+    if (!clearScope || (all && !clearScope.allTenants) || (!all && !tenantId)) {
       $("logsMessage").textContent = "Enter a tenant ID before exporting the clear scope.";
       return;
     }
-    exportLogs(false, {
-      tenantId,
-      timeZone: $("logsTimeZone").value || "UTC",
-    }, clearScope.cutoff);
+    exportLogs(all, all ? {} : {tenantId, timeZone: $("logsTimeZone").value || "UTC"}, clearScope.cutoff);
   };
   $("logsClearConfirm").onclick = async () => {
-    const tenantId = $("logsClearTenant").value.trim();
+    const all = $("logsClearAll").checked;
+    const tenantId = all ? "" : $("logsClearTenant").value;
     const confirmation = $("logsClearConfirmation").value;
-    if (!clearScope || !tenantId || confirmation !== `CLEAR ${clearScope.environment}`) {
-      $("logsMessage").textContent = "Enter a tenant ID and the exact environment confirmation.";
+    if (!clearScope || (all && !clearScope.allTenants) || (!all && !tenantId) || confirmation !== `CLEAR ${clearScope.environment}`) {
+      $("logsMessage").textContent = "Select an authorized scope and enter the exact environment confirmation.";
       return;
     }
-    await submitLogCommand({type: "clear_logs", environment: clearScope.environment, tenantId, confirmation, cutoff: clearScope.cutoff});
+    await submitLogCommand({type: "clear_logs", environment: clearScope.environment, scope: all ? "environment" : "tenant", tenantId, confirmation, cutoff: clearScope.cutoff});
   };
   // The About dialog lives outside the Metrics subtree so it is available on
   // every administration page. Resolve it with the shell's document-level $.

@@ -63,10 +63,11 @@ func TestLogsCommandSubmissionAndStatus(t *testing.T) {
 		path := logsAdminMonitorPrefix + "/commands"
 		for _, body := range []string{
 			`{"requestId":"` + id + `","environment":"production","type":"set_capture_threshold","threshold":4}`,
-			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","tenantId":"","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`,
-			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","tenantId":"tenant-b","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`,
-			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","tenantId":"tenant-a","confirmation":"CLEAR development","cutoff":"2999-01-01T00:00:00Z"}`,
-			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","tenantId":"tenant-a","confirmation":"CLEAR production","cutoff":"2026-01-01T00:00:00Z"}`,
+			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","tenantId":"tenant-a","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`,
+			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"tenant","tenantId":"","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`,
+			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"tenant","tenantId":"tenant-b","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`,
+			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"tenant","tenantId":"tenant-a","confirmation":"CLEAR development","cutoff":"2999-01-01T00:00:00Z"}`,
+			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"tenant","tenantId":"tenant-a","confirmation":"CLEAR production","cutoff":"2026-01-01T00:00:00Z"}`,
 		} {
 			if got := call(http.MethodPost, path, body); got.Code != http.StatusBadRequest {
 				mt.Fatalf("invalid command accepted: %s (%d)", body, got.Code)
@@ -75,14 +76,24 @@ func TestLogsCommandSubmissionAndStatus(t *testing.T) {
 		if events := mt.GetAllStartedEvents(); len(events) != 0 {
 			mt.Fatal("invalid command reached database")
 		}
+		unauthorized := `{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"environment","tenantId":"","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`
+		if got := call(http.MethodPost, path, unauthorized); got.Code != http.StatusForbidden {
+			mt.Fatalf("environment-wide clear returned %d, want forbidden", got.Code)
+		}
+		if events := mt.GetAllStartedEvents(); len(events) != 0 {
+			mt.Fatal("unauthorized environment-wide clear reached database")
+		}
 		for _, tc := range []struct {
 			body, kind, scope, tenant string
 			threshold                 int32
+			allTenants                bool
 		}{
-			{`{"requestId":"` + id + `","environment":"development","type":"set_capture_threshold","threshold":4}`, "set_capture_threshold", "environment", "", 4},
-			{`{"requestId":"` + id + `","environment":"development","type":"clear_logs","tenantId":"tenant-a","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`, "clear_logs", "tenant", "tenant-a", 0},
+			{`{"requestId":"` + id + `","environment":"development","type":"set_capture_threshold","threshold":4}`, "set_capture_threshold", "environment", "", 4, false},
+			{`{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"tenant","tenantId":"tenant-a","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`, "clear_logs", "tenant", "tenant-a", 0, false},
+			{unauthorized, "clear_logs", "environment", "", 0, true},
 		} {
 			mt.ClearEvents()
+			repo.allTenants = tc.allTenants
 			mt.AddMockResponses(mtest.CreateSuccessResponse(bson.E{Key: "n", Value: 1}))
 			if got := call(http.MethodPost, path, tc.body); got.Code != http.StatusAccepted {
 				mt.Fatalf("submit: %d %s", got.Code, got.Body)
@@ -99,6 +110,17 @@ func TestLogsCommandSubmissionAndStatus(t *testing.T) {
 			}
 			if tc.kind == "clear_logs" && (doc.Lookup("confirmation").StringValue() != "CLEAR development" || doc.Lookup("cutoff").Time().UTC().Format(time.RFC3339) != "2026-01-01T00:00:00Z") {
 				mt.Fatal("wrong clear confirmation or cutoff")
+			}
+		}
+		repo.allTenants = true
+		for _, body := range []string{
+			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"tenant","tenantId":"","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`,
+			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"environment","tenantId":"tenant-a","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`,
+			`{"requestId":"` + id + `","environment":"development","type":"clear_logs","scope":"all","confirmation":"CLEAR development","cutoff":"2026-01-01T00:00:00Z"}`,
+		} {
+			mt.ClearEvents()
+			if got := call(http.MethodPost, path, body); got.Code != http.StatusBadRequest || len(mt.GetAllStartedEvents()) != 0 {
+				mt.Fatalf("invalid all-tenant command accepted: %s (%d)", body, got.Code)
 			}
 		}
 		mt.ClearEvents()
@@ -174,4 +196,24 @@ func TestLogsCommandRetryUsesOriginalID(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestClearExportScopeFilters(t *testing.T) {
+	cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	repo := &logsRepository{environment: "development", allTenants: true}
+	all, err := repo.filter(logQuery{}, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := all["tenantId"]; ok {
+		t.Fatal("environment-wide export excludes tenantless server logs")
+	}
+	if all["environment"] != "development" || !all["timestamp"].(bson.M)["$lte"].(time.Time).Equal(cutoff) {
+		t.Fatal("environment-wide export lost environment or cutoff")
+	}
+	tenant, err := repo.filter(logQuery{TenantID: "tenant-a"}, cutoff)
+	if err != nil || tenant["tenantId"] != "tenant-a" || tenant["environment"] != "development" ||
+		!tenant["timestamp"].(bson.M)["$lte"].(time.Time).Equal(cutoff) {
+		t.Fatal("tenant export lost scope or cutoff")
+	}
 }
