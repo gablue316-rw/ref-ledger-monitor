@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +22,11 @@ type logsThresholdUpdater struct {
 	url    string
 	token  string
 	client *http.Client
+}
+
+func logsThresholdActor(username string) string {
+	hash := sha256.Sum256([]byte(username))
+	return fmt.Sprintf("monitor-%x", hash)
 }
 
 func configureLogsThresholdUpdater(repo *logsRepository, environment string) (*logsThresholdUpdater, error) {
@@ -121,7 +128,7 @@ func (app *Application) logsThresholdUpdate(w http.ResponseWriter, r *http.Reque
 		adminUsersError(w, http.StatusServiceUnavailable, "Capture threshold is unavailable.")
 		return
 	}
-	if err := app.logsUpdater.update(r.Context(), app.logs.environment, actor, request.Threshold); err != nil {
+	if err := app.logsUpdater.update(r.Context(), app.logs.environment, logsThresholdActor(actor), request.Threshold); err != nil {
 		adminUsersError(w, http.StatusBadGateway, "Unable to confirm the threshold update. Refresh the effective threshold before retrying.")
 		return
 	}

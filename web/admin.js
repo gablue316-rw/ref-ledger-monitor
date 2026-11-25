@@ -304,7 +304,7 @@
       failed = true;
     }
     const refreshed = await loadLogThreshold();
-    if (failed || !refreshed) {
+    if (failed || !refreshed || Number($("logsThreshold").value) !== threshold) {
       const current = refreshed ? $("logsThresholdMessage").textContent : "Unable to refresh the effective threshold.";
       $("logsThresholdMessage").textContent =
         `${current} The update could not be confirmed and may have succeeded. Refresh the effective threshold before retrying.`;

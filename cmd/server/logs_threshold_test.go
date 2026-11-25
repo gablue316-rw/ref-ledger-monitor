@@ -5,9 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestLogsThresholdActor(t *testing.T) {
+	first := logsThresholdActor("admin+one@example.test")
+	if !regexp.MustCompile(`^monitor-[0-9a-f]{64}$`).MatchString(first) || first != logsThresholdActor("admin+one@example.test") || first == logsThresholdActor("admin+two@example.test") {
+		t.Fatal("actor must be stable, distinct, and accepted by the upstream API")
+	}
+}
 
 func TestLogsThresholdUpdaterConfiguration(t *testing.T) {
 	repo := &logsRepository{environment: "development"}

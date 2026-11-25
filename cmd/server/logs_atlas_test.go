@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -104,7 +106,7 @@ func TestLogsAtlasLiveLeastPrivilege(t *testing.T) {
 	if err := auditor.Database(dbName).Collection("refLedgerLogs").FindOne(ctx, bson.M{}).Err(); !denied(err) {
 		t.Fatal("auditor read was not denied")
 	}
-	const actor = "verification-admin"
+	const actor = "verification+admin@example.test"
 	token := strings.Repeat("b", 64)
 	if _, err := db.Collection("admin_sessions").InsertOne(ctx, bson.M{"_id": adminTokenHash(token), "username": actor, "expiresAt": time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal("test session insert failed")
@@ -120,7 +122,8 @@ func TestLogsAtlasLiveLeastPrivilege(t *testing.T) {
 		t.Fatal("restricted clients could not perform audited export")
 	}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Ref-Ledger-Admin-Actor") != actor {
+		actorHash := sha256.Sum256([]byte(actor))
+		if r.Header.Get("X-Ref-Ledger-Admin-Actor") != fmt.Sprintf("monitor-%x", actorHash) {
 			t.Error("upstream did not receive session actor")
 		}
 		if r.Method == http.MethodGet {

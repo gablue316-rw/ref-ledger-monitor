@@ -65,10 +65,13 @@ exports, and a durable audit record. Test failures using nonproduction data.
 The browser does not receive database credentials or the logs API token. When
 threshold updates are configured, Monitor needs server-to-server connectivity to
 Ref Ledger's authenticated logs admin API. The service records its own audit
-entry for threshold updates. An unsuccessful or timed-out request may still
+entry for threshold updates. Monitor sends a stable SHA-256 representation of
+the authenticated session username as the actor; Ref Ledger pseudonymizes it
+again for its audit record. An unsuccessful or timed-out request may still
 have changed the threshold; refresh the effective value before retrying.
 
-To roll back, remove all five required logs settings and restart Monitor; the
+To roll back, remove all five required logs settings and both optional
+`LOGS_ADMIN_URL` and `LOGS_ADMIN_TOKEN` settings, then restart Monitor; the
 Logs routes then return a service-unavailable message. Keep the two existing
 Ref Ledger transport validation checks unchanged. Clearing remains disabled.
 Do not grant Monitor write or delete access to the log store.
