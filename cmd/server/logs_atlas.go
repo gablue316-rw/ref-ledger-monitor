@@ -301,7 +301,7 @@ func logsCutoff(value string) (time.Time, error) {
 
 func (app *Application) logsAtlasHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if (r.URL.Path == logsAdminThresholdPath && r.Method != http.MethodGet) || r.URL.Path == logsAdminMonitorPrefix+"/clear" {
+	if (r.URL.Path == logsAdminThresholdPath && r.Method != http.MethodGet && r.Method != http.MethodPut) || r.URL.Path == logsAdminMonitorPrefix+"/clear" {
 		adminUsersError(w, http.StatusMethodNotAllowed, "Log changes are unavailable during Phase 1.")
 		return
 	}
@@ -312,6 +312,8 @@ func (app *Application) logsAtlasHandler(w http.ResponseWriter, r *http.Request)
 	switch {
 	case r.URL.Path == logsAdminThresholdPath && r.Method == http.MethodGet:
 		app.logsThresholdAtlas(w, r)
+	case r.URL.Path == logsAdminThresholdPath && r.Method == http.MethodPut:
+		app.logsThresholdUpdate(w, r)
 	case r.URL.Path == logsAdminMonitorPrefix+"/records" && r.Method == http.MethodGet:
 		app.logsRecordsAtlas(w, r)
 	case r.URL.Path == logsAdminMonitorPrefix+"/export" && r.Method == http.MethodPost:
@@ -322,12 +324,19 @@ func (app *Application) logsAtlasHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (app *Application) logsThresholdAtlas(w http.ResponseWriter, r *http.Request) {
-	repo := app.logs
-	if !repo.settings {
+	threshold, err := app.logs.captureThreshold(r.Context())
+	if err != nil {
 		adminUsersError(w, http.StatusServiceUnavailable, "Capture threshold is unavailable.")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	writeJSON(w, http.StatusOK, map[string]any{"threshold": threshold, "environment": app.logs.environment, "updateEnabled": app.logsUpdater != nil})
+}
+
+func (repo *logsRepository) captureThreshold(parent context.Context) (int, error) {
+	if !repo.settings {
+		return 0, errors.New("settings unavailable")
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	var setting struct {
 		Threshold int `bson:"threshold"`
@@ -338,10 +347,9 @@ func (app *Application) logsThresholdAtlas(w http.ResponseWriter, r *http.Reques
 		err = nil
 	}
 	if err != nil || setting.Threshold < 1 || setting.Threshold > 4 {
-		adminUsersError(w, http.StatusServiceUnavailable, "Capture threshold is unavailable.")
-		return
+		return 0, errors.New("settings unavailable")
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"threshold": setting.Threshold, "environment": repo.environment})
+	return setting.Threshold, nil
 }
 
 func (app *Application) logsRecordsAtlas(w http.ResponseWriter, r *http.Request) {

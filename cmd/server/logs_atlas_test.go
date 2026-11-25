@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -95,13 +97,16 @@ func TestLogsAtlasLiveLeastPrivilege(t *testing.T) {
 	if _, err := reader.Database(dbName).Collection("refLedgerLogs").DeleteMany(ctx, bson.M{}); !denied(err) {
 		t.Fatal("log deletion was not denied")
 	}
+	if _, err := reader.Database(dbName).Collection("refLedgerLogSettings").UpdateOne(ctx, bson.M{"_id": "capture:development"}, bson.M{"$set": bson.M{"threshold": 4}}); !denied(err) {
+		t.Fatal("settings update was not denied")
+	}
 	if _, err := auditor.Database(dbName).Collection("monitorLogExportAudit").InsertOne(ctx, bson.M{"outcome": "test"}); err != nil {
 		t.Fatal("auditor could not insert audit entry")
 	}
 	if err := auditor.Database(dbName).Collection("refLedgerLogs").FindOne(ctx, bson.M{}).Err(); !denied(err) {
 		t.Fatal("auditor read was not denied")
 	}
-	const actor = "verification-admin"
+	const actor = "verification+admin@example.test"
 	token := strings.Repeat("b", 64)
 	if _, err := db.Collection("admin_sessions").InsertOne(ctx, bson.M{"_id": adminTokenHash(token), "username": actor, "expiresAt": time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal("test session insert failed")
@@ -115,6 +120,52 @@ func TestLogsAtlasLiveLeastPrivilege(t *testing.T) {
 	app.routes().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "privilege-verification") {
 		t.Fatal("restricted clients could not perform audited export")
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		actorHash := sha256.Sum256([]byte(actor))
+		if r.Header.Get("X-Ref-Ledger-Admin-Actor") != fmt.Sprintf("monitor-%x", actorHash) {
+			t.Error("upstream did not receive session actor")
+		}
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"environment": "development", "threshold": 3})
+			return
+		}
+		var body struct {
+			Threshold int `json:"threshold"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil {
+			t.Error("invalid upstream body")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, err := db.Collection("refLedgerLogSettings").UpdateOne(ctx, bson.M{"_id": "capture:development"}, bson.M{"$set": bson.M{"threshold": body.Threshold}}); err != nil {
+			t.Error("fixture update failed")
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer upstream.Close()
+	app.logsUpdater = &logsThresholdUpdater{url: upstream.URL + refLedgerThresholdPath, token: strings.Repeat("x", 32), client: upstream.Client()}
+	for _, level := range []int{4, 3} {
+		body, _ := json.Marshal(map[string]any{"threshold": level, "environment": "development"})
+		req := httptest.NewRequest(http.MethodPut, logsAdminThresholdPath, bytes.NewReader(body))
+		req.AddCookie(&http.Cookie{Name: adminCookie, Value: token})
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Ref-Ledger-Admin", "1")
+		resp := httptest.NewRecorder()
+		app.routes().ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("threshold update returned %d", resp.Code)
+		}
+		get := httptest.NewRequest(http.MethodGet, logsAdminThresholdPath, nil)
+		get.AddCookie(&http.Cookie{Name: adminCookie, Value: token})
+		resp = httptest.NewRecorder()
+		app.routes().ServeHTTP(resp, get)
+		var result struct {
+			Threshold int `json:"threshold"`
+		}
+		if resp.Code != http.StatusOK || json.Unmarshal(resp.Body.Bytes(), &result) != nil || result.Threshold != level {
+			t.Fatalf("threshold readback: %s", resp.Body.String())
+		}
 	}
 }
 func TestLogsAtlasScopeAndTimeFilters(t *testing.T) {

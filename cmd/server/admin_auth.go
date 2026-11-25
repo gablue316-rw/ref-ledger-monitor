@@ -18,6 +18,8 @@ import (
 const adminCookie = "rl_admin_session"
 const adminSessionTTL = 30 * time.Minute
 
+type adminActorKey struct{}
+
 func adminTokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -56,7 +58,7 @@ func (app *Application) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				"_id": adminTokenHash(cookie.Value), "expiresAt": bson.M{"$gt": time.Now().UTC()},
 			}).Decode(&session)
 			if err == nil && session.Username == app.config.Username {
-				next(w, r)
+				next(w, r.WithContext(context.WithValue(r.Context(), adminActorKey{}, session.Username)))
 				return
 			}
 			if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
