@@ -33,10 +33,13 @@
     } catch {
       if (response.ok) throw Error("Expected JSON from the administrator API.");
     }
-    if (!response.ok)
-      throw Error(
+    if (!response.ok) {
+      const error = Error(
         data.message || data.error || text.trim() || `HTTP ${response.status}`,
       );
+      error.status = response.status;
+      throw error;
+    }
     return data;
   }
   function post(path, payload, version) {
@@ -100,6 +103,7 @@
         Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
       loadLogThreshold();
       loadLogs(true);
+      if (pendingCommand) checkLogCommand();
     }
   }
   document
@@ -108,6 +112,11 @@
   window.addEventListener("hashchange", navigate);
   let logsOffset = 0, logsHasMore = false, logsCutoff = "", logsBusy = false;
   let thresholdBusy = false, thresholdEnvironment = "", thresholdLoad = 0;
+  let commandMode = false, clearScope = null, commandBusy = false;
+  let pendingCommand = null;
+  try { pendingCommand = JSON.parse(sessionStorage.getItem("logsPendingCommand") || "null"); }
+  catch { sessionStorage.removeItem("logsPendingCommand"); }
+  let commandUncertain = !!pendingCommand;
   const logLevels = {1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"};
   const logFilterFields = [
     ["dateFrom", "logsDateFrom"], ["dateThrough", "logsDateThrough"],
@@ -141,14 +150,16 @@
         throw Error("Ref Ledger returned an invalid capture threshold.");
       if (!data.environment) throw Error("Ref Ledger returned an invalid environment.");
       thresholdEnvironment = data.environment;
+      commandMode = data.commandMode === true;
       $("logsThreshold").value = String(data.threshold);
       $("logsEnvironment").textContent = data.environment || "Unknown";
       $("logsClearEnvironment").textContent = data.environment || "Unknown";
       $("logsThresholdMessage").textContent =
         `Effective threshold: ${logLevels[data.threshold]}.`;
       $("logsThresholdMessage").style.color = "";
-      $("logsThreshold").disabled = !data.updateEnabled;
-      $("logsThresholdSave").disabled = !data.updateEnabled;
+      $("logsThreshold").disabled = !data.updateEnabled || !!pendingCommand;
+      $("logsThresholdSave").disabled = !data.updateEnabled || !!pendingCommand;
+      $("logsClearOpen").disabled = !commandMode || !!pendingCommand;
       return true;
     } catch (error) {
       if (load !== thresholdLoad) return false;
@@ -176,6 +187,7 @@
       logsHasMore = data.hasMore === true;
       $("logsEnvironment").textContent = data.environment || "Unknown";
       $("logsClearEnvironment").textContent = data.environment || "Unknown";
+      $("logsClearOpen").disabled = !data.clearEnabled || !!pendingCommand;
       renderLogs(Array.isArray(data.items) ? data.items : []);
       $("logsPage").textContent = data.items.length
         ? `Showing ${logsOffset + 1}–${logsOffset + data.items.length}${logsHasMore ? " · more available" : ""} · cutoff ${logsCutoff}`
@@ -241,6 +253,19 @@
       detailsRow.hidden = true;
       const details = el("td", "");
       details.colSpan = 7;
+      const attributes = item.attributes || {};
+      const http = {};
+      for (const key of ["method", "route", "statusCode", "bytesIn", "bytesOut"])
+        if (attributes[key] !== undefined && attributes[key] !== null) http[key] = attributes[key];
+      for (const [label, value] of [
+        ["HTTP metadata", http],
+        ["Saved fields", attributes.savedValues],
+        ["Changed fields (old / new)", attributes.changedValues],
+      ]) {
+        details.append(el("strong", label));
+        details.append(el("pre", value && Object.keys(value).length ? JSON.stringify(value, null, 2) : ""));
+      }
+      details.append(el("strong", "Recorded entry"));
       details.append(el("pre", JSON.stringify(item, null, 2)));
       detailsRow.append(details);
       toggle.onclick = () => {
@@ -290,6 +315,11 @@
     ++thresholdLoad;
     const threshold = Number($("logsThreshold").value);
     const environment = thresholdEnvironment;
+    if (commandMode) {
+      thresholdBusy = false;
+      await submitLogCommand({type: "set_capture_threshold", threshold, environment});
+      return;
+    }
     $("logsThreshold").disabled = true;
     $("logsThresholdSave").disabled = true;
     $("logsThresholdMessage").textContent = "Saving capture threshold…";
@@ -312,7 +342,7 @@
     }
     thresholdBusy = false;
   };
-  async function exportLogs(all, filters) {
+  async function exportLogs(all, filters, cutoff = "") {
     $("logsMessage").textContent = "Preparing JSON Lines export…";
     $("logsMessage").style.color = "";
     try {
@@ -324,7 +354,7 @@
           "Content-Type": "application/json",
           "X-Ref-Ledger-Admin": "1",
         },
-        body: JSON.stringify({all, filters}),
+        body: JSON.stringify({all, filters, cutoff}),
         signal: AbortSignal.timeout(300000),
       });
       if (!response.ok) {
@@ -356,15 +386,133 @@
     catch (error) { $("logsMessage").textContent = error.message; }
   };
   $("logsExportAll").onclick = () => exportLogs(true, {});
+  function showPendingCommand(message) {
+    $("logsCommandMessage").textContent = message;
+    $("logsCommandCheck").hidden = !pendingCommand;
+    $("logsCommandRetry").hidden = !pendingCommand;
+    $("logsCommandCheck").disabled = commandBusy;
+    $("logsCommandRetry").disabled = commandBusy;
+    if (pendingCommand) {
+      $("logsThreshold").disabled = true;
+      $("logsThresholdSave").disabled = true;
+      $("logsClearOpen").disabled = true;
+      $("logsClearConfirm").disabled = true;
+    }
+  }
+  async function submitLogCommand(payload) {
+    if (pendingCommand || commandBusy) return;
+    pendingCommand = {...payload, requestId: crypto.randomUUID()};
+    sessionStorage.setItem("logsPendingCommand", JSON.stringify(pendingCommand));
+    await retryLogCommand();
+  }
+  async function retryLogCommand() {
+    if (!pendingCommand || commandBusy) return;
+    commandBusy = true;
+    showPendingCommand(`Submitting request ${pendingCommand.requestId}…`);
+    try {
+      await post("api/admin/logs/commands", pendingCommand);
+    } catch (error) {
+      commandBusy = false;
+      if (error.status === 400 && !commandUncertain) {
+        pendingCommand = null;
+        sessionStorage.removeItem("logsPendingCommand");
+        showPendingCommand(`Command not submitted: ${error.message}`);
+        await loadLogThreshold();
+        $("logsClearConfirm").disabled = false;
+        return;
+      }
+      commandUncertain = true;
+      showPendingCommand(`Submission unconfirmed: ${error.message} Check the original request or retry it with the same ID.`);
+      return;
+    }
+    commandBusy = false;
+    await checkLogCommand();
+  }
+  async function checkLogCommand() {
+    if (!pendingCommand || commandBusy) return;
+    commandBusy = true;
+    const id = pendingCommand.requestId;
+    showPendingCommand(`Pending request ${id}…`);
+    try {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const status = await request(`api/admin/logs/commands/${encodeURIComponent(id)}`);
+        if (status.state === "completed") {
+          pendingCommand = null;
+          commandUncertain = false;
+          sessionStorage.removeItem("logsPendingCommand");
+          commandBusy = false;
+          const result = status.outcome === "success"
+            ? status.type === "clear_logs" ? `Clear completed: ${status.deletedCount} record(s) deleted.` : "Threshold update completed."
+            : `Command rejected: ${status.reason || "unknown reason"}.`;
+          showPendingCommand(`${result} Request ${id}.`);
+          $("logsClearPanel").hidden = true;
+          await loadLogThreshold();
+          loadLogs(true);
+          return;
+        }
+        if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+      commandBusy = false;
+      showPendingCommand(`Request ${id} is still pending. Check the original request before submitting another.`);
+    } catch (error) {
+      commandBusy = false;
+      showPendingCommand(`Unable to confirm request ${id}: ${error.message} Check or retry the original request.`);
+    }
+  }
+  $("logsCommandCheck").onclick = checkLogCommand;
+  $("logsCommandRetry").onclick = retryLogCommand;
+  $("logsClearOpen").onclick = async () => {
+    if (pendingCommand || commandBusy) return;
+    try {
+      clearScope = await request("api/admin/logs/clear-scope");
+      $("logsClearEnvironment").textContent = clearScope.environment;
+      $("logsClearScope").textContent = clearScope.allTenants ? "all tenants and server logs" : (clearScope.tenants || []).join(", ");
+      $("logsClearCutoff").textContent = clearScope.cutoff;
+      $("logsClearTenant").value = "";
+      $("logsClearAllOption").hidden = !clearScope.allTenants;
+      $("logsClearAll").checked = false;
+      $("logsClearByTenant").checked = true;
+      $("logsClearConfirmation").value = "";
+      $("logsClearConfirmation").placeholder = `CLEAR ${clearScope.environment}`;
+      $("logsClearConfirmationEnvironment").textContent = clearScope.environment;
+      updateClearSelection();
+      $("logsClearPanel").hidden = false;
+      $("logsClearConfirm").disabled = false;
+    } catch (error) {
+      $("logsMessage").textContent = `Unable to prepare clearing: ${error.message}`;
+    }
+  };
+  function updateClearSelection() {
+    const all = $("logsClearAll").checked;
+    const tenantId = $("logsClearTenant").value;
+    $("logsClearTenant").disabled = all;
+    $("logsClearSelectedScope").textContent = all
+      ? "All logs, including server logs without a tenant ID"
+      : tenantId ? `Tenant ID: ${tenantId}` : "By Tenant ID (enter an exact tenant ID)";
+    $("logsClearConfirmation").value = "";
+  }
+  $("logsClearAll").onchange = updateClearSelection;
+  $("logsClearByTenant").onchange = updateClearSelection;
+  $("logsClearTenant").oninput = updateClearSelection;
   $("logsClearCancel").onclick = () => { $("logsClearPanel").hidden = true; };
   $("logsClearExport").onclick = () => {
-    exportLogs(false, {
-      tenantId: $("logsClearTenant").value.trim(),
-      timeZone: $("logsTimeZone").value || "UTC",
-    });
+    const all = $("logsClearAll").checked;
+    const tenantId = $("logsClearTenant").value;
+    if (!clearScope || (all && !clearScope.allTenants) || (!all && !tenantId)) {
+      $("logsMessage").textContent = "Enter a tenant ID before exporting the clear scope.";
+      return;
+    }
+    exportLogs(all, all ? {} : {tenantId, timeZone: $("logsTimeZone").value || "UTC"}, clearScope.cutoff);
   };
-  $("logsClearConfirm").onclick = () => {
-    $("logsMessage").textContent = "Clearing logs is unavailable during Phase 1.";
+  $("logsClearConfirm").onclick = async () => {
+    const all = $("logsClearAll").checked;
+    const tenantId = all ? "" : $("logsClearTenant").value;
+    const confirmation = $("logsClearConfirmation").value;
+    if (!clearScope || (all && !clearScope.allTenants) || (!all && !tenantId) || confirmation !== `CLEAR ${clearScope.environment}`) {
+      $("logsMessage").textContent = "Select an authorized scope and enter the exact environment confirmation.";
+      return;
+    }
+    await submitLogCommand({type: "clear_logs", environment: clearScope.environment, scope: all ? "environment" : "tenant", tenantId, confirmation, cutoff: clearScope.cutoff});
   };
   // The About dialog lives outside the Metrics subtree so it is available on
   // every administration page. Resolve it with the shell's document-level $.
