@@ -107,6 +107,7 @@
     .forEach((b) => (b.onclick = () => (location.hash = b.dataset.page)));
   window.addEventListener("hashchange", navigate);
   let logsOffset = 0, logsHasMore = false, logsCutoff = "", logsBusy = false;
+  let thresholdBusy = false, thresholdEnvironment = "", thresholdLoad = 0;
   const logLevels = {1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"};
   const logFilterFields = [
     ["dateFrom", "logsDateFrom"], ["dateThrough", "logsDateThrough"],
@@ -127,22 +128,34 @@
     return filters;
   }
   async function loadLogThreshold() {
+    const load = ++thresholdLoad;
+    $("logsThreshold").disabled = true;
+    $("logsThresholdSave").disabled = true;
+    thresholdEnvironment = "";
     $("logsThresholdMessage").textContent = "Loading capture threshold…";
     $("logsThreshold").value = "";
     try {
       const data = await request("api/admin/logs/threshold");
+      if (load !== thresholdLoad) return false;
       if (![1, 2, 3, 4].includes(data.threshold))
         throw Error("Ref Ledger returned an invalid capture threshold.");
+      if (!data.environment) throw Error("Ref Ledger returned an invalid environment.");
+      thresholdEnvironment = data.environment;
       $("logsThreshold").value = String(data.threshold);
       $("logsEnvironment").textContent = data.environment || "Unknown";
       $("logsClearEnvironment").textContent = data.environment || "Unknown";
       $("logsThresholdMessage").textContent =
         `Effective threshold: ${logLevels[data.threshold]}.`;
       $("logsThresholdMessage").style.color = "";
+      $("logsThreshold").disabled = !data.updateEnabled;
+      $("logsThresholdSave").disabled = !data.updateEnabled;
+      return true;
     } catch (error) {
+      if (load !== thresholdLoad) return false;
       $("logsThresholdMessage").textContent =
         `Unable to load the capture threshold: ${error.message}`;
       $("logsThresholdMessage").style.color = "#a32020";
+      return false;
     }
   }
   async function loadLogs(reset) {
@@ -257,7 +270,7 @@
     loadLogs(true);
   };
   $("logsRefresh").onclick = () => {
-    loadLogThreshold();
+    if (!thresholdBusy) loadLogThreshold();
     loadLogs(true);
   };
   $("logsPrev").onclick = () => {
@@ -272,7 +285,32 @@
   };
   $("logsThresholdForm").onsubmit = async (event) => {
     event.preventDefault();
-    $("logsThresholdMessage").textContent = "Threshold changes are unavailable during Phase 1.";
+    if (thresholdBusy || $("logsThresholdSave").disabled) return;
+    thresholdBusy = true;
+    ++thresholdLoad;
+    const threshold = Number($("logsThreshold").value);
+    const environment = thresholdEnvironment;
+    $("logsThreshold").disabled = true;
+    $("logsThresholdSave").disabled = true;
+    $("logsThresholdMessage").textContent = "Saving capture threshold…";
+    let failed = false;
+    try {
+      await request("api/admin/logs/threshold", {
+        method: "PUT",
+        headers: {"Content-Type": "application/json", "X-Ref-Ledger-Admin": "1"},
+        body: JSON.stringify({threshold, environment}),
+      });
+    } catch {
+      failed = true;
+    }
+    const refreshed = await loadLogThreshold();
+    if (failed || !refreshed) {
+      const current = refreshed ? $("logsThresholdMessage").textContent : "Unable to refresh the effective threshold.";
+      $("logsThresholdMessage").textContent =
+        `${current} The update could not be confirmed and may have succeeded. Refresh the effective threshold before retrying.`;
+      $("logsThresholdMessage").style.color = "#a32020";
+    }
+    thresholdBusy = false;
   };
   async function exportLogs(all, filters) {
     $("logsMessage").textContent = "Preparing JSON Lines export…";

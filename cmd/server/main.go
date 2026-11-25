@@ -73,9 +73,10 @@ type Config struct {
 }
 
 type Application struct {
-	config Config
-	db     *mongo.Database
-	logs   *logsRepository
+	config      Config
+	db          *mongo.Database
+	logs        *logsRepository
+	logsUpdater *logsThresholdUpdater
 }
 
 func main() {
@@ -129,6 +130,10 @@ func run() error {
 	}
 	if app.logs != nil {
 		defer app.logs.close()
+	}
+	app.logsUpdater, err = configureLogsThresholdUpdater(app.logs, cfg.Environment)
+	if err != nil {
+		return err
 	}
 
 	mux := app.routes()

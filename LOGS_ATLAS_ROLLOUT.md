@@ -1,4 +1,4 @@
-# Ref Ledger logs: Phase 1 rollout
+# Ref Ledger logs rollout
 
 The existing Monitor administrator session grants access to one configured
 environment and tenant scope. Monitor does not currently have individual
@@ -18,6 +18,14 @@ Set these server-side deployment secrets and settings together:
 - `LOGS_READ_SETTINGS`: set to `true` only when the reader has permission to
   read the dedicated `refLedgerLogSettings` collection. Otherwise the threshold
   is unavailable.
+- `LOGS_ADMIN_URL` and `LOGS_ADMIN_TOKEN` (optional, both required for threshold
+  updates): the origin of the Ref Ledger service and its
+  `REF_LEDGER_LOG_API_TOKEN`. Use HTTPS, except for loopback HTTP in development.
+  The token must contain at least 32 non-whitespace ASCII characters. Configure
+  the service so every instance behind this origin uses the same environment
+  and database as `LOGS_ENVIRONMENT` and `LOGS_DATABASE`. Monitor verifies the
+  service's environment before each update; the API does not support an atomic
+  environment precondition. Do not mix environments behind this origin.
 
 Leaving all five required settings absent disables the feature. Partial
 configuration fails startup. In deployed environments the two connection
@@ -54,11 +62,17 @@ Before enabling, verify the deployed Monitor host's stable allowlisted egress or
 private connectivity, TLS, scoped grants, and tenant scope. Confirm a fresh
 Ref Ledger record and a historical record in the viewer, filters and both JSONL
 exports, and a durable audit record. Test failures using nonproduction data.
-The browser does not receive database credentials. No Ref Ledger logging API
-or ingress changes are needed.
+The browser does not receive database credentials or the logs API token. When
+threshold updates are configured, Monitor needs server-to-server connectivity to
+Ref Ledger's authenticated logs admin API. The service records its own audit
+entry for threshold updates. An unsuccessful or timed-out request may still
+have changed the threshold; refresh the effective value before retrying.
 
 To roll back, remove all five required logs settings and restart Monitor; the
 Logs routes then return a service-unavailable message. Keep the two existing
-Ref Ledger transport validation checks unchanged. Threshold changes and
-clearing are disabled until Phase 2 command processing and audit verification
-are deployed. Do not grant Monitor write or delete access to the log store.
+Ref Ledger transport validation checks unchanged. Clearing remains disabled.
+Do not grant Monitor write or delete access to the log store.
+
+In development, verify a switch from Info to Debug and back to Info, refreshing
+after each save. Confirm newly emitted Debug entries are captured only while
+Debug is enabled, and that previously captured Debug entries remain searchable.
