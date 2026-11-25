@@ -164,11 +164,33 @@ func TestOfficialRoleValidation(t *testing.T) {
 func cursor(ns string, docs ...bson.D) bson.D {
 	return mtest.CreateCursorResponse(0, ns, mtest.FirstBatch, docs...)
 }
+
+func TestStoredSessionBSONDecode(t *testing.T) {
+	expiresAt := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	raw, err := bson.Marshal(bson.D{
+		{Key: "sessionId", Value: "s1"},
+		{Key: "expiresAt", Value: expiresAt},
+		{Key: "username", Value: "someone@test.com"},
+		{Key: "tenantId", Value: "other-account"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var session storedSession
+	if err := bson.Unmarshal(raw, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.SessionID != "s1" || !session.ExpiresAt.Equal(expiresAt) || session.Username != "someone@test.com" || session.TenantID != "other-account" {
+		t.Fatalf("unexpected decoded session: %+v", session)
+	}
+}
+
 func TestAdminSearchAcrossAccounts(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("search has no actor tenant filter", func(mt *mtest.T) {
 		id := primitive.NewObjectID()
-		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "someone@test.com"}, {Key: "name", Value: "Someone"}, {Key: "tenantId", Value: "other-account"}, {Key: "role", Value: "user"}}), cursor(mt.DB.Name()+".sessions", bson.D{{Key: "username", Value: "someone@test.com"}, {Key: "tenantId", Value: "other-account"}, {Key: "sessionId", Value: "s1"}, {Key: "expiresAt", Value: time.Now().Add(time.Hour)}}))
+		expiresAt := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+		mt.AddMockResponses(adminSessionMock(mt), cursor(mt.DB.Name()+".users", bson.D{{Key: "_id", Value: id}, {Key: "username", Value: "someone@test.com"}, {Key: "name", Value: "Someone"}, {Key: "tenantId", Value: "other-account"}, {Key: "role", Value: "user"}}), cursor(mt.DB.Name()+".sessions", bson.D{{Key: "username", Value: "someone@test.com"}, {Key: "tenantId", Value: "other-account"}, {Key: "sessionId", Value: "s1"}, {Key: "expiresAt", Value: expiresAt}}))
 		app := testApp()
 		app.db = mt.DB
 		w := httptest.NewRecorder()
@@ -184,6 +206,9 @@ func TestAdminSearchAcrossAccounts(t *testing.T) {
 		}
 		if len(data.Users) != 1 || data.Users[0].TenantID != "other-account" || data.Users[0].IsCurrentUser || len(data.Users[0].Sessions) != 1 {
 			mt.Fatalf("unexpected response: %s", w.Body.String())
+		}
+		if session := data.Users[0].Sessions[0]; session.SessionID != "s1" || !session.ExpiresAt.Equal(expiresAt) {
+			mt.Fatalf("unexpected session: %+v", session)
 		}
 		events := adminDataEvents(mt)
 		var cmd bson.M
