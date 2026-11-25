@@ -294,6 +294,45 @@
       tbody tr:hover {
         background: #f9fbfc;
       }
+      .logs-table {
+        table-layout: fixed;
+        min-width: 860px;
+      }
+      .logs-table .log-summary td {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 8px 10px;
+      }
+      .logs-table th:first-child {
+        width: 230px;
+      }
+      .logs-table th:last-child {
+        width: 80px;
+      }
+      .log-transaction {
+        display: block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border: 0;
+        padding: 0;
+        background: none;
+        color: #1f614d;
+        text-decoration: underline;
+        white-space: nowrap;
+      }
+      .log-details-toggle {
+        padding: 4px 8px;
+      }
+      .logs-table .log-details td {
+        white-space: normal;
+        padding: 8px 16px;
+      }
+      .log-details pre {
+        margin: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
       .mono {
         font-family: ui-monospace, monospace;
         font-size: 11px;
@@ -1689,8 +1728,8 @@
           </div>
           <p id="logsMessage" role="status" aria-live="polite" style="padding:0 20px"></p>
           <div class="tablewrap" tabindex="0" aria-label="Ref Ledger log records">
-            <table>
-              <thead><tr><th>Timestamp / level</th><th>Event</th><th>Message</th><th>Operation / outcome</th><th>Tenant / user</th><th>Collection / details</th></tr></thead>
+            <table class="logs-table">
+              <thead><tr><th>Timestamp / level</th><th>Event</th><th>Message</th><th>Operation / outcome</th><th>Tenant / user</th><th>Transaction ID</th><th>Details</th></tr></thead>
               <tbody id="logsRows"></tbody>
             </table>
           </div>

@@ -187,39 +187,56 @@
     rows.replaceChildren();
     if (!items.length) {
       const tr = el("tr", ""), td = el("td", "No logs match these filters.");
-      td.colSpan = 6;
+      td.colSpan = 7;
       tr.append(td);
       rows.append(tr);
       return;
     }
-    for (const item of items) {
-      const tr = el("tr", "");
+    for (const [index, item] of items.entries()) {
+      const tr = el("tr", "", "log-summary");
       const date = new Date(item.timestamp);
       const time = Number.isNaN(date.getTime())
         ? "Invalid timestamp"
         : date.toLocaleString(undefined, {timeZone: $("logsTimeZone").value || "UTC"});
       const level = logLevels[item.level] || "UNKNOWN";
-      const first = el("td", `${time} [${level}]`);
-      first.style.whiteSpace = "nowrap";
-      tr.append(first, el("td", item.event || "—"), el("td", item.message || "—"));
-      tr.append(el("td", `${item.operation || "—"} / ${item.outcome || "—"}`));
-      tr.append(el("td", `tenant: ${item.tenantId || "—"} · user: ${item.userId || "—"}`));
-      const details = el("td", "");
-      details.append(el("div", `collection: ${item.collection || "—"}`));
-      if (item.transactionId) {
-        const drill = el("button", item.transactionId, "btn");
-        drill.type = "button";
-        drill.onclick = () => drillIntoTransaction(item.transactionId);
-        details.append(drill);
+      for (const value of [
+        `${time} [${level}]`, item.event || "—", item.message || "—",
+        `${item.operation || "—"} / ${item.outcome || "—"}`,
+        `${item.tenantId || "—"} / ${item.userId || "—"}`,
+      ]) {
+        const cell = el("td", value);
+        cell.title = value;
+        tr.append(cell);
       }
-      const structured = {
-        sessionId: item.sessionId, mongoId: item.mongoId,
-        errorCategory: item.errorCategory, driverCode: item.driverCode,
-        elapsedMs: item.elapsedMs, attributes: item.attributes,
+      const transaction = el("td", "");
+      if (item.transactionId) {
+        const drill = el("button", item.transactionId, "log-transaction");
+        drill.type = "button";
+        drill.title = `Show logs for transaction ${item.transactionId}`;
+        drill.onclick = () => drillIntoTransaction(item.transactionId);
+        transaction.append(drill);
+      } else {
+        transaction.textContent = "—";
+      }
+      const detailsCell = el("td", "");
+      const toggle = el("button", "Details", "btn log-details-toggle");
+      toggle.type = "button";
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-controls", `log-details-${index}`);
+      const detailsRow = el("tr", "", "log-details");
+      detailsRow.id = `log-details-${index}`;
+      detailsRow.hidden = true;
+      const details = el("td", "");
+      details.colSpan = 7;
+      details.append(el("pre", JSON.stringify(item, null, 2)));
+      detailsRow.append(details);
+      toggle.onclick = () => {
+        detailsRow.hidden = !detailsRow.hidden;
+        toggle.setAttribute("aria-expanded", String(!detailsRow.hidden));
       };
-      details.append(el("pre", JSON.stringify(structured, null, 2) || "{}"));
-      tr.append(details);
-      rows.append(tr);
+      detailsCell.append(toggle);
+      tr.append(transaction, detailsCell);
+      rows.append(tr, detailsRow);
     }
   }
   function drillIntoTransaction(transactionId) {
