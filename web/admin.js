@@ -653,6 +653,7 @@
         const div = el("div", "", "session"),
           date = new Date(session.expiresAt);
         div.append(
+          el("div", session.client || "Unknown", "small"),
           el("code", session.sessionId || "Missing session ID"),
           el(
             "div",
