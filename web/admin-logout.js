@@ -36,4 +36,10 @@
   window.addEventListener("pageshow", (event) => {
     if (event.persisted) location.reload();
   });
+  window.addEventListener("monitor-app-resume", () => {
+    fetch(adminURL("api/about"), {
+      credentials: "same-origin", cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    }).catch(() => {});
+  });
 })();

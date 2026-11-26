@@ -395,7 +395,11 @@ func (app *Application) logsRecordsAtlas(w http.ResponseWriter, r *http.Request)
 	if zone == "" {
 		zone = "UTC"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "hasMore": more, "cutoff": cutoff.Format(time.RFC3339Nano), "environment": app.logs.environment, "timeZone": zone, "clearEnabled": app.logsCommands != nil})
+	clearReason := ""
+	if app.logsCommands == nil {
+		clearReason = logsClearUnavailable
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "hasMore": more, "cutoff": cutoff.Format(time.RFC3339Nano), "environment": app.logs.environment, "timeZone": zone, "clearEnabled": app.logsCommands != nil, "clearUnavailableReason": clearReason})
 }
 
 func (repo *logsRepository) audit(actor, id, scope, outcome string) error {

@@ -1,0 +1,18 @@
+{
+  "name": "ref-ledger-monitor-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Android shell for Ref Ledger Monitor",
+  "scripts": {
+    "configure": "node configure.mjs",
+    "sync": "npm run configure && cap sync android",
+    "test": "node --test *.test.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "7.6.9",
+    "@capacitor/core": "7.6.9"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "7.6.9"
+  }
+}

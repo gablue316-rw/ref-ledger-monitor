@@ -1101,6 +1101,10 @@
             </div>
           </section>
           <div class="toolbar">
+            <label for="rl-tenant-selector">Tenant</label>
+            <select id="rl-tenant-selector">
+              <option value="">All tenants</option>
+            </select>
             <label for="rl-filter-by">Filter by</label>
             <select id="rl-filter-by">
               <option value="username">Username</option>
@@ -1206,7 +1210,8 @@
               let latest = null,
                 refreshSeconds = 5,
                 timer = null,
-                busy = false;
+                busy = false,
+                mobilePaused = false;
               const title = (s) => s[0].toUpperCase() + s.slice(1);
               const empty = () => ({
                 added: 0,
@@ -1286,6 +1291,19 @@
               }
               function accept(data) {
                 latest = data;
+                const selector = $("rl-tenant-selector"), selected = selector.value;
+                const tenants = [...new Set(data.users.map((user) => user.tenantId))].sort();
+                if (selected && !tenants.includes(selected)) tenants.push(selected);
+                const all = document.createElement("option");
+                all.value = "";
+                all.textContent = "All tenants";
+                selector.replaceChildren(all, ...tenants.map((tenant) => {
+                  const option = document.createElement("option");
+                  option.value = tenant;
+                  option.textContent = tenant;
+                  return option;
+                }));
+                selector.value = selected;
                 $("rl-total-users").textContent = fmt.format(data.totalUsers);
                 $("rl-active-users").textContent = fmt.format(data.activeUsers);
                 const percent = data.totalUsers
@@ -1350,12 +1368,13 @@
                 if (!latest) return;
                 const query = $("rl-user-filter").value.trim(),
                   field = $("rl-filter-by").value,
+                  tenant = $("rl-tenant-selector").value,
                   users = latest.users.filter((u) =>
-                    matchesUser(u, field, query),
+                    (!tenant || u.tenantId === tenant) && matchesUser(u, field, query),
                   ),
                   total = aggregate(users);
                 $("rl-scope").textContent =
-                  (query
+                  (tenant ? `Tenant "${tenant}" · ` : "") + (query
                     ? `${field === "username" ? "Username" : "Tenant ID"} contains "${query}" · ${fmt.format(users.length)} matching users`
                     : "All users") + " · Current minute";
                 gauge(
@@ -1448,6 +1467,7 @@
                 return value.toLowerCase().includes(query.trim().toLowerCase());
               }
               $("rl-user-filter").oninput = render;
+              $("rl-tenant-selector").onchange = render;
               $("rl-filter-by").onchange = () => {
                 $("rl-user-filter").placeholder =
                   $("rl-filter-by").value === "username"
@@ -1509,7 +1529,7 @@
                   throw Error("Invalid minute window");
               }
               async function poll() {
-                if (busy || document.hidden || document.getElementById("metrics").hidden) return;
+                if (busy || document.hidden || mobilePaused || document.getElementById("metrics").hidden) return;
                 busy = true;
                 try {
                   const response = await fetch(
@@ -1556,10 +1576,21 @@
               }
               function schedule() {
                 clearInterval(timer);
-                timer = setInterval(poll, refreshSeconds * 1000);
+                if (!document.hidden && !mobilePaused)
+                  timer = setInterval(poll, refreshSeconds * 1000);
               }
               document.addEventListener("visibilitychange", () => {
+                schedule();
                 if (!document.hidden) poll();
+              });
+              window.addEventListener("monitor-app-pause", () => {
+                mobilePaused = true;
+                schedule();
+              });
+              window.addEventListener("monitor-app-resume", () => {
+                mobilePaused = false;
+                schedule();
+                poll();
               });
               window.addEventListener("hashchange", () => queueMicrotask(poll));
               $("rl-refresh").onchange = () => {
@@ -1726,10 +1757,12 @@
             <div class="toolbar">
               <button class="btn" id="logsExportFiltered" type="button">Export filtered JSONL</button>
               <button class="btn" id="logsExportAll" type="button">Export all accessible JSONL</button>
+              <button class="btn" id="logsShareExport" type="button" hidden>Share prepared export</button>
               <button class="btn" id="logsClearOpen" type="button" disabled>Clear logs…</button>
             </div>
           </div>
           <p id="logsMessage" role="status" aria-live="polite" style="padding:0 20px"></p>
+          <p id="logsClearAvailability" role="status" style="padding:0 20px"></p>
           <div class="tablewrap" tabindex="0" aria-label="Ref Ledger log records">
             <table class="logs-table">
               <thead><tr><th>Timestamp / level</th><th>Event</th><th>Message</th><th>Operation / outcome</th><th>Tenant / user</th><th>Transaction ID</th><th>Details</th></tr></thead>
