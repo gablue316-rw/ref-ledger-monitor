@@ -36,6 +36,7 @@ type adminUserRecord struct {
 type adminUserSession struct {
 	SessionID string    `bson:"sessionId" json:"sessionId"`
 	ExpiresAt time.Time `bson:"expiresAt" json:"expiresAt"`
+	Client    string    `json:"client"`
 }
 
 type storedSession struct {
@@ -43,6 +44,21 @@ type storedSession struct {
 	ExpiresAt time.Time `bson:"expiresAt"`
 	Username  string    `bson:"username"`
 	TenantID  string    `bson:"tenantId"`
+	Type      string    `bson:"type"`
+	Platform  string    `bson:"platform"`
+	Client    string    `bson:"client"`
+}
+
+func (s storedSession) clientLabel() string {
+	switch {
+	case s.Platform == "android" || (s.Type == "mobile" && s.Platform == ""):
+		return "Android app"
+	case s.Client == "web" || (s.Type == "" && s.Platform == "" && s.Client == "" && s.SessionID != ""):
+		// Older web sessions have an ID but no type. Legacy mobile activity has no ID.
+		return "Web browser"
+	default:
+		return "Unknown"
+	}
 }
 
 type adminUserView struct {
@@ -157,7 +173,7 @@ func (app *Application) adminUsersSearch(w http.ResponseWriter, r *http.Request)
 	sessionMap := make(map[string][]adminUserSession)
 	if len(pairs) > 0 {
 		sessionCursor, err := db.Collection("sessions").Find(ctx, bson.M{"$or": pairs}, options.Find().
-			SetProjection(bson.M{"_id": 0, "sessionId": 1, "expiresAt": 1, "username": 1, "tenantId": 1}).
+			SetProjection(bson.M{"_id": 0, "sessionId": 1, "expiresAt": 1, "username": 1, "tenantId": 1, "type": 1, "platform": 1, "client": 1}).
 			SetSort(bson.D{{Key: "expiresAt", Value: -1}, {Key: "sessionId", Value: 1}}))
 		if err != nil {
 			adminUsersError(w, http.StatusInternalServerError, "Unable to load sessions.")
@@ -171,7 +187,11 @@ func (app *Application) adminUsersSearch(w http.ResponseWriter, r *http.Request)
 		}
 		for _, session := range stored {
 			key := session.TenantID + "\x00" + session.Username
-			sessionMap[key] = append(sessionMap[key], adminUserSession{SessionID: session.SessionID, ExpiresAt: session.ExpiresAt})
+			sessionMap[key] = append(sessionMap[key], adminUserSession{
+				SessionID: session.SessionID,
+				ExpiresAt: session.ExpiresAt,
+				Client:    session.clientLabel(),
+			})
 		}
 	}
 	views := make([]adminUserView, 0, len(users))
