@@ -62,7 +62,7 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         WebView view = bridge.getWebView();
-        view.evaluateJavascript("(function(){const d=document.querySelector('dialog[open]');if(d){d.close();return true}return false})()", result -> {
+        view.evaluateJavascript("(function(){const d=document.querySelector('dialog[open]');if(d){if(d.dispatchEvent(new Event('cancel',{cancelable:true})))d.close();return true}return false})()", result -> {
             if ("true".equals(result)) return;
             if (view.canGoBack()) view.goBack();
             else finish();

@@ -12,11 +12,13 @@ Subscriptions screen on this branch. See `../LOGS_ATLAS_ROLLOUT.md` for log
 scope and command-worker configuration. A disabled Clear Logs control shows
 the reason reported by the server; a permitted clear retains the server's
 scope, confirmation, command and audit checks.
+The dashboard tenant selector filters metrics already returned to the browser;
+it is not an authorization boundary.
 
 ## Requirements
 
 * Windows 10/11, Git, Node.js 20 or 22 LTS and npm.
-* Android Studio with JDK 17 (its bundled JDK may be used), Android SDK
+* Android Studio, JDK 21, Android SDK
   Platform 35, SDK Build-Tools 35.0.0, and Android SDK Platform-Tools.
 * The checked-in Gradle wrapper downloads Gradle 8.11.1; Android Studio also
   needs access to Google Maven and Maven Central. An HTTPS Monitor origin with
@@ -36,7 +38,7 @@ git clone https://github.com/gablue316-rw/ref-ledger-monitor.git
 cd ref-ledger-monitor
 git checkout copilot/feature-add-android-app
 cd mobile
-$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-21"
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 $env:Path = "$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:Path"
 npm ci
@@ -47,7 +49,8 @@ cd android
 .\gradlew.bat assembleDebug
 ```
 
-Replace the example URL and, if installed elsewhere, the JDK and SDK paths.
+Replace the example URL and the JDK and SDK paths with your installed paths.
+In Android Studio, also set **Gradle JDK** to JDK 21.
 The APK is
 `mobile\android\app\build\outputs\apk\debug\app-debug.apk`. To install to a
 connected phone after authorizing USB debugging:
@@ -75,7 +78,8 @@ that a failed or uncertain write is reconciled with server state before retry.
 Run the same server-side authorization tests independently of the app.
 
 JSONL export requires Android WebView support for sharing files via the Web
-Share API. If unavailable, the app explicitly reports that limitation; use the
+Share API. After preparing an export, tap **Share prepared export**. If sharing
+is unavailable, the app explicitly reports that limitation; use the
 Monitor website in a browser to export. The share target chosen by the user
 may persist sensitive logs. Verify export and server audit records with
 disposable data before relying on it. Google Play distribution is out of scope.

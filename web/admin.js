@@ -346,13 +346,20 @@
     }
     thresholdBusy = false;
   };
+  let pendingExportFile = null, exportBusy = false;
   async function exportLogs(all, filters, cutoff = "") {
+    if (exportBusy) return;
     const android = window.Capacitor?.getPlatform() === "android";
+    pendingExportFile = null;
+    $("logsShareExport").hidden = true;
     if (android && (!navigator.share || !navigator.canShare)) {
       $("logsMessage").textContent = "Export is unavailable in this Android WebView. Use the Monitor website in a browser to export.";
       $("logsMessage").style.color = "#a32020";
       return;
     }
+    exportBusy = true;
+    $("logsExportFiltered").disabled = true;
+    $("logsExportAll").disabled = true;
     $("logsMessage").textContent = "Preparing JSON Lines export…";
     $("logsMessage").style.color = "";
     try {
@@ -383,7 +390,8 @@
         const file = new File([blob], "ref-ledger-logs.jsonl", {type: "application/x-ndjson"});
         if (!navigator.canShare({files: [file]}))
           throw Error("This Android WebView cannot share the export. Use the Monitor website in a browser.");
-        await navigator.share({files: [file], title: "Ref Ledger logs"});
+        pendingExportFile = file;
+        $("logsShareExport").hidden = false;
       } else {
         const url = URL.createObjectURL(blob), link = document.createElement("a");
         link.href = url;
@@ -392,12 +400,34 @@
         URL.revokeObjectURL(url);
       }
       $("logsMessage").textContent =
-        `Export complete: ${exported} record(s), scope ${response.headers.get("X-Log-Export-Scope") || "environment"}, cutoff ${response.headers.get("X-Log-Export-Cutoff") || "server-defined"}. Final audit status is unavailable here; check Monitor audit records.`;
+        `${android ? "Export prepared; tap Share prepared export" : "Export complete"}: ${exported} record(s), scope ${response.headers.get("X-Log-Export-Scope") || "environment"}, cutoff ${response.headers.get("X-Log-Export-Cutoff") || "server-defined"}. Final audit status is unavailable here; check Monitor audit records.`;
     } catch (error) {
       $("logsMessage").textContent = `Log export failed: ${error.message}`;
       $("logsMessage").style.color = "#a32020";
+    } finally {
+      exportBusy = false;
+      $("logsExportFiltered").disabled = false;
+      $("logsExportAll").disabled = false;
     }
   }
+  $("logsShareExport").onclick = async () => {
+    if (!pendingExportFile || exportBusy) return;
+    exportBusy = true;
+    $("logsShareExport").disabled = true;
+    try {
+      await navigator.share({files: [pendingExportFile], title: "Ref Ledger logs"});
+      pendingExportFile = null;
+      $("logsShareExport").hidden = true;
+      $("logsMessage").textContent = "Export shared. Check Monitor audit records for final audit status.";
+    } catch (error) {
+      $("logsMessage").textContent = `Sharing failed or was cancelled: ${error.message}`;
+      $("logsMessage").style.color = "#a32020";
+    } finally {
+      exportBusy = false;
+      $("logsShareExport").disabled = false;
+    }
+  };
+  window.addEventListener("pagehide", () => { pendingExportFile = null; $("logsShareExport").hidden = true; });
   $("logsExportFiltered").onclick = () => {
     try { exportLogs(false, logFilters()); }
     catch (error) { $("logsMessage").textContent = error.message; }
