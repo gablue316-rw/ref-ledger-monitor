@@ -102,9 +102,11 @@ func (repo *logsRepository) permitsCommandTenant(tenant string) bool {
 	return false
 }
 
+const logsClearUnavailable = "Log clearing is unavailable."
+
 func (app *Application) logsClearScope(w http.ResponseWriter, r *http.Request) {
 	if app.logsCommands == nil {
-		adminUsersError(w, http.StatusServiceUnavailable, "Log clearing is unavailable.")
+		adminUsersError(w, http.StatusServiceUnavailable, logsClearUnavailable)
 		return
 	}
 	cutoff, _ := logsCutoff("")

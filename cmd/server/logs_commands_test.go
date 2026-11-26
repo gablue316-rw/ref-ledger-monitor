@@ -47,6 +47,28 @@ func TestLogsCommandConfiguration(t *testing.T) {
 	}
 }
 
+func TestLogsClearAvailabilityIsConsistent(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("unavailable reason and scope endpoint", func(mt *mtest.T) {
+		app := &Application{logs: &logsRepository{reader: mt.Client, database: mt.DB.Name(), environment: "development", allTenants: true}}
+		mt.AddMockResponses(mtest.CreateCursorResponse(0, mt.DB.Name()+".refLedgerLogs", mtest.FirstBatch))
+		records := httptest.NewRecorder()
+		app.logsAtlasHandler(records, httptest.NewRequest(http.MethodGet, logsAdminMonitorPrefix+"/records", nil))
+		var data struct {
+			ClearEnabled           bool   `json:"clearEnabled"`
+			ClearUnavailableReason string `json:"clearUnavailableReason"`
+		}
+		if records.Code != http.StatusOK || json.Unmarshal(records.Body.Bytes(), &data) != nil || data.ClearEnabled || data.ClearUnavailableReason != logsClearUnavailable {
+			mt.Fatalf("invalid availability response: %s", records.Body.String())
+		}
+		scope := httptest.NewRecorder()
+		app.logsAtlasHandler(scope, httptest.NewRequest(http.MethodGet, logsAdminMonitorPrefix+"/clear-scope", nil))
+		if scope.Code != http.StatusServiceUnavailable || !strings.Contains(scope.Body.String(), data.ClearUnavailableReason) {
+			mt.Fatalf("inconsistent scope response: %s", scope.Body.String())
+		}
+	})
+}
+
 func TestLogsCommandSubmissionAndStatus(t *testing.T) {
 	const id = "b2e39411-9629-4ebe-84b9-7c5a8171a962"
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))

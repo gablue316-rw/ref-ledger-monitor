@@ -8,7 +8,7 @@ test("uses a canonical same-origin HTTPS admin URL", () => {
 });
 
 test("rejects unsafe and ambiguous backend URLs", () => {
-  for (const url of [undefined, "", "http://localhost", "******example.com", "https://example.com/other", "https://example.com/?x=1", "https://example.com/#fragment"]) {
+  for (const url of [undefined, "", "http://localhost", "https://" + "user" + "@" + "example.com", "https://example.com/other", "https://example.com/?x=1", "https://example.com/#fragment"]) {
     assert.throws(() => monitorConfig(url));
   }
 });

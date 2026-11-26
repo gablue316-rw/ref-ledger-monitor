@@ -159,7 +159,6 @@
       $("logsThresholdMessage").style.color = "";
       $("logsThreshold").disabled = !data.updateEnabled || !!pendingCommand;
       $("logsThresholdSave").disabled = !data.updateEnabled || !!pendingCommand;
-      $("logsClearOpen").disabled = !commandMode || !!pendingCommand;
       return true;
     } catch (error) {
       if (load !== thresholdLoad) return false;
@@ -188,6 +187,9 @@
       $("logsEnvironment").textContent = data.environment || "Unknown";
       $("logsClearEnvironment").textContent = data.environment || "Unknown";
       $("logsClearOpen").disabled = !data.clearEnabled || !!pendingCommand;
+      $("logsClearAvailability").textContent = data.clearEnabled
+        ? ""
+        : (data.clearUnavailableReason || "Log clearing is unavailable.");
       renderLogs(Array.isArray(data.items) ? data.items : []);
       $("logsPage").textContent = data.items.length
         ? `Showing ${logsOffset + 1}–${logsOffset + data.items.length}${logsHasMore ? " · more available" : ""} · cutoff ${logsCutoff}`
@@ -198,6 +200,8 @@
       $("logsMessage").style.color = "";
     } catch (error) {
       $("logsRows").replaceChildren();
+      $("logsClearOpen").disabled = true;
+      $("logsClearAvailability").textContent = `Log clearing is unavailable: ${error.message}`;
       $("logsMessage").textContent = `Unable to load logs: ${error.message}`;
       $("logsMessage").style.color = "#a32020";
       logsHasMore = false;
@@ -343,6 +347,12 @@
     thresholdBusy = false;
   };
   async function exportLogs(all, filters, cutoff = "") {
+    const android = window.Capacitor?.getPlatform() === "android";
+    if (android && (!navigator.share || !navigator.canShare)) {
+      $("logsMessage").textContent = "Export is unavailable in this Android WebView. Use the Monitor website in a browser to export.";
+      $("logsMessage").style.color = "#a32020";
+      return;
+    }
     $("logsMessage").textContent = "Preparing JSON Lines export…";
     $("logsMessage").style.color = "";
     try {
@@ -369,11 +379,18 @@
       const exported = archive.length ? archive.trimEnd().split(/\r?\n/).length : 0;
       if (!Number.isFinite(expected) || exported !== expected)
         throw Error(`Incomplete export: received ${exported} of ${Number.isFinite(expected) ? expected : "unknown"} records.`);
-      const url = URL.createObjectURL(blob), link = document.createElement("a");
-      link.href = url;
-      link.download = "ref-ledger-logs.jsonl";
-      link.click();
-      URL.revokeObjectURL(url);
+      if (android) {
+        const file = new File([blob], "ref-ledger-logs.jsonl", {type: "application/x-ndjson"});
+        if (!navigator.canShare({files: [file]}))
+          throw Error("This Android WebView cannot share the export. Use the Monitor website in a browser.");
+        await navigator.share({files: [file], title: "Ref Ledger logs"});
+      } else {
+        const url = URL.createObjectURL(blob), link = document.createElement("a");
+        link.href = url;
+        link.download = "ref-ledger-logs.jsonl";
+        link.click();
+        URL.revokeObjectURL(url);
+      }
       $("logsMessage").textContent =
         `Export complete: ${exported} record(s), scope ${response.headers.get("X-Log-Export-Scope") || "environment"}, cutoff ${response.headers.get("X-Log-Export-Cutoff") || "server-defined"}. Final audit status is unavailable here; check Monitor audit records.`;
     } catch (error) {
