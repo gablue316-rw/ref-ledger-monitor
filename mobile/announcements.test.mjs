@@ -133,9 +133,9 @@ test("several announcements render as text and session lookup errors remain unkn
   await f.api.loadAnnouncements();
   const cards = f.get("announcementList").children;
   assert.equal(cards.length, 2);
-  assert.equal(cards[0].children[1].textContent, item.message);
-  await cards[0].children[3].children[1].onclick();
-  assert.match(cards[0].children[3].children[0].textContent, /status unknown/);
+  assert.equal(cards[0].children[2].textContent, item.message);
+  await cards[0].children[4].children[1].onclick();
+  assert.match(cards[0].children[4].children[0].textContent, /status unknown/);
   f.events.visibilitychange();
   f.windowEvents["monitor-app-resume"]();
   await new Promise(setImmediate);
@@ -228,7 +228,7 @@ test("periodic refresh only while visible, and in-flight stale reads cannot over
   await save;
   resolveOld({announcements: [{id: "old", audience: "system", message: "Stale", version: 1}]});
   await old;
-  assert.equal(f.get("announcementList").children[0].children[1].textContent, "New");
+  assert.equal(f.get("announcementList").children[0].children[2].textContent, "New");
   f.intervals[0].fn();
   await new Promise(setImmediate);
   assert.equal(f.calls.length, 4);
@@ -266,7 +266,7 @@ test("Atlas paginates lists, accounts and sessions using new command IDs and sta
   }, {}, atlasMode);
   await f.api.loadAnnouncements();
   assert.equal(f.get("announcementList").children.length, 2);
-  await f.get("announcementList").children[0].children[5].children[0].children[0].onclick();
+  await f.get("announcementList").children[0].children[1].children[0].children[0].onclick();
   assert.equal(f.get("announcementMessage").value, "first");
   await selectAccount(f);
   await f.api.loadAnnouncementSessions();
@@ -454,8 +454,8 @@ test("search retains its filter after one bulk clear and only inactive rows can 
     row.children[0].children[0].checked = true;
     row.children[0].children[0].onchange();
   }
-  assert.equal(before[3].children[0].children[0].disabled, true);
-  assert.equal(before[0].children[5].children[0].children.some((button) => button.title === "Delete permanently"), false);
+  assert.equal(before[3].children[0].children[0].disabled, false);
+  assert.equal(before[0].children[1].children[0].children.some((button) => button.title === "Delete permanently"), false);
   await f.get("announcementBulkClear").onclick();
   const bulk = [...commands.values()].filter((command) => command.type === "bulk-clear");
   assert.equal(bulk.length, 1);
@@ -465,14 +465,78 @@ test("search retains its filter after one bulk clear and only inactive rows can 
   f.get("announcementType").value = "expired";
   await f.get("announcementSearchType").onclick();
   const expired = f.get("announcementList").children[0];
-  await expired.children[5].children[0].children[0].onclick();
+  await expired.children[1].children[0].children[0].onclick();
   f.get("announcementType").value = "cleared";
   await f.get("announcementSearchType").onclick();
   for (let count = 0; count < 3; count++) {
-    await f.get("announcementList").children[0].children[5].children[0].children[0].onclick();
+    await f.get("announcementList").children[0].children[1].children[0].children[0].onclick();
   }
   await f.get("announcementRefresh").onclick();
   assert.equal(f.get("announcementList").children.length, 0);
   assert.equal(entries.length, 1);
   assert.equal([...commands.values()].at(-1).status, "cleared");
+});
+
+test("bulk delete spans pages, protects active and scheduled banners, and resumes with confirmed counts", async () => {
+  const entries = [
+    {id: "active", status: "active"},
+    {id: "scheduled", status: "scheduled"},
+    {id: "cleared", status: "cleared"},
+    ...Array.from({length: 23}, (_, i) => ({id: `active-${i}`, status: "active"})),
+    {id: "stale-expired", status: "expired"},
+    {id: "expired", status: "expired"},
+  ];
+  const persistent = {};
+  const commands = new Map();
+  const deletePosts = [];
+  let processing = true;
+  const handler = async (path, options) => {
+    if (path === commandPath) {
+      const command = options.payload;
+      commands.set(command.requestId, command);
+      if (command.type === "delete") deletePosts.push(command.announcementId);
+      return {};
+    }
+    const command = commands.get(path.slice(commandPath.length + 1));
+    const {requestId, announcementId} = command;
+    if (command.type === "search") {
+      return {requestId, state: "completed", outcome: "success",
+        result: {announcements: entries, nextCursor: ""}};
+    }
+    assert.equal(command.type, "delete");
+    if (announcementId === "stale-expired") {
+      return processing ? {requestId, state: "processing"}
+        : {requestId, state: "completed", outcome: "rejected", reason: "announcement_not_found"};
+    }
+    const index = entries.findIndex((row) => row.id === announcementId);
+    assert.ok(index >= 0);
+    entries.splice(index, 1);
+    return {requestId, state: "completed", outcome: "success", result: {id: announcementId}};
+  };
+
+  const f = fixture(handler, {}, atlasMode, persistent);
+  await f.api.loadAnnouncements();
+  f.get("announcementSelectAll").onclick();
+  f.get("announcementPageNext").onclick();
+  assert.ok(f.get("announcementList").children.every((row) => row.children[0].children[0].checked));
+  f.get("announcementClearSelected").onclick();
+  assert.ok(f.get("announcementList").children.every((row) => !row.children[0].children[0].checked));
+  assert.deepEqual(deletePosts, []);
+
+  f.get("announcementSelectAll").onclick();
+  await f.get("announcementDeleteAll").onclick();
+  assert.deepEqual(deletePosts, ["cleared", "stale-expired"]);
+  assert.equal(JSON.parse(persistent[pendingKey]).deleteBatch.deleted, 1);
+  assert.match(f.get("announcementCommandStatus").textContent, /2 pending/);
+  assert.equal(f.get("announcementDeleteAll").disabled, true);
+
+  processing = false;
+  const reopened = fixture(handler, {}, atlasMode, persistent);
+  await reopened.get("announcementCommandCheck").onclick();
+  assert.deepEqual(deletePosts, ["cleared", "stale-expired", "expired"]);
+  assert.equal(persistent[pendingKey], undefined);
+  assert.match(reopened.get("announcementListStatus").textContent,
+    /Deleted 2 announcements\. 26 were not deleted\. 25 were Active or Scheduled\. 1 failed/);
+  assert.ok(reopened.get("announcementList").children.every((row) => row.children[0].children[0].checked));
+  assert.ok(entries.some((row) => row.id === "scheduled"));
 });

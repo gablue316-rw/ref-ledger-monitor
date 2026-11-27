@@ -632,6 +632,13 @@
       #announcements table input[type="checkbox"] { width: auto; }
       #announcements td { overflow-wrap: anywhere; vertical-align: top; }
       #announcements .toolbar button { flex-shrink: 0; }
+      #announcements .btn { background: #e8f1fb; color: #194b7a; border-color: #aac5e2; }
+      #announcements .btn.primary { background: #1f614d; color: white; border-color: #1f614d; }
+      #announcements .btn.announcement-clear { background: #fff1d2; color: #704300; border-color: #d7ad66; }
+      #announcements .btn.announcement-delete { background: #a12637; color: white; border-color: #a12637; }
+      #announcements .btn:focus-visible { outline: 2px solid #194b7a; outline-offset: 2px; }
+      #announcements .btn:disabled { background: #eef1f5; color: #526074; border-color: #c4cdd8; cursor: default; }
+      #announcements td:nth-child(2) .toolbar { margin: 0; flex-wrap: nowrap; }
       #announcements .announcement-message { white-space: pre-wrap; color: var(--ink); }
       #announcements .toolbar { margin: 12px 0; }
       @media (max-width: 850px) {
@@ -689,6 +696,12 @@
               <h2>Announcements</h2>
               <button class="btn" type="button" id="announcementRefresh">Refresh</button>
             </div>
+            <div class="toolbar" role="group" aria-label="Selection actions">
+              <button class="btn" type="button" id="announcementSelectAll" disabled>Select All</button>
+              <button class="btn" type="button" id="announcementClearSelected" disabled>Clear Selected</button>
+              <button class="btn announcement-clear" type="button" id="announcementBulkClear" disabled>Clear Banners</button>
+              <button class="btn announcement-delete" type="button" id="announcementDeleteAll" disabled>Delete All</button>
+            </div>
             <div class="toolbar">
               <label>Banner type
                 <select id="announcementType">
@@ -700,12 +713,11 @@
                 </select>
               </label>
               <button class="btn" type="button" id="announcementSearchType">Search</button>
-              <button class="btn" type="button" id="announcementBulkClear" disabled>Clear Selected Banner</button>
             </div>
             <p id="announcementListStatus" role="status" aria-live="polite"></p>
             <div style="overflow-x:auto" role="region" aria-label="Announcement results" tabindex="0">
               <table aria-label="Banners">
-                <thead><tr><th scope="col">Select</th><th scope="col">Message</th><th scope="col">Status</th><th scope="col">Audience</th><th scope="col">Schedule</th><th scope="col">Actions</th></tr></thead>
+                <thead><tr><th scope="col">Select</th><th scope="col">Actions</th><th scope="col">Message</th><th scope="col">Status</th><th scope="col">Audience</th><th scope="col">Schedule</th></tr></thead>
                 <tbody id="announcementList"></tbody>
               </table>
             </div>
