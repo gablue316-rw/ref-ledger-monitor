@@ -217,7 +217,8 @@
   async function checkAtlasCommand(resubmit = false) {
     if (!atlasPending || atlasCommandBusy) return;
     atlasCommandBusy = true;
-    const command = atlasPending.command;
+    let command = atlasPending.command;
+    updateBulkClear();
     showAtlasCommand(`Pending command ${command.requestId}.`);
     try {
       if (!navigator.locks) throw Error("Exclusive command locking is unavailable. Update the WebView.");
@@ -228,15 +229,46 @@
           throw Error("Saved command changed in another tab. Reload and reconcile it.");
         await ensureAnnouncementMode(true);
         if (!atlasIdentityMatches()) throw Error("The current operator or environment differs from the saved command. Restore the original context.");
-        if (resubmit) await atlasPost(command);
-        let status;
-        try { status = await atlasStatus(command); }
-        catch (error) {
-          if (error.status !== 404) throw error;
-          await atlasPost(command);
-          status = await atlasStatus(command);
-        }
-        if (status.state === "completed" && ["success", "rejected", "failed"].includes(status.outcome)) {
+        while (atlasPending) {
+          command = atlasPending.command;
+          if (resubmit) await atlasPost(command);
+          resubmit = false;
+          let status;
+          try { status = await atlasStatus(command); }
+          catch (error) {
+            if (error.status !== 404) throw error;
+            await atlasPost(command);
+            status = await atlasStatus(command);
+          }
+          if (status.state !== "completed" || !["success", "rejected", "failed"].includes(status.outcome)) {
+            const batch = atlasPending.deleteBatch;
+            const progress = batch ? `${deleteBatchSummary(batch)} ${batch.remaining.length + 1} pending.` : "";
+            const state = ["pending", "processing"].includes(status.state)
+              ? `Pending command ${command.requestId} (${status.state}).`
+              : `Unresolved command ${command.requestId}: invalid status.`;
+            showAtlasCommand(progress ? `${state} ${progress}` : state);
+            break;
+          }
+          const batch = atlasPending.deleteBatch;
+          if (batch) {
+            const succeeded = status.outcome === "success";
+            const [next, ...remaining] = batch.remaining;
+            const updated = {...batch, remaining,
+              selected: succeeded ? batch.selected.filter((id) => id !== command.announcementId) : batch.selected,
+              deleted: batch.deleted + Number(succeeded),
+              failures: succeeded ? batch.failures : [...batch.failures, status.reason || status.outcome]};
+            if (next) {
+              saveAtlasPending({...atlasPending, command: deleteCommand(next), deleteBatch: updated});
+              try { await atlasPost(atlasPending.command); } catch { /* Reconcile the saved ID. */ }
+              continue;
+            }
+            saveAtlasPending(null);
+            for (const id of updated.selected) selectedAnnouncementIds.add(id);
+            completionMessage = deleteBatchSummary(updated);
+            showAtlasCommand(completionMessage);
+            confirmed = true;
+            break;
+          }
           const label = status.outcome === "success" ? "Confirmed" : status.outcome === "rejected" ? "Rejected" : "Failed";
           const source = atlasPending.source;
           saveAtlasPending(null);
@@ -249,20 +281,19 @@
             completionMessage = `Cleared ${cleared} of ${results.length} selected banners.` +
               (skipped ? ` Skipped ${skipped} banners that were no longer clearable.` : "");
             bulkClearOutcomes = new Map(results.map((row) => [row.id, row.outcome]));
-            selectedAnnouncementIds.clear();
+            for (const row of results) selectedAnnouncementIds.delete(row.id);
           }
-        } else if (status.state === "pending" || status.state === "processing") {
-          showAtlasCommand(`Pending command ${command.requestId} (${status.state}).`);
-        } else {
-          showAtlasCommand(`Unresolved command ${command.requestId}: invalid status.`);
+          break;
         }
       });
       if (confirmed) {
-        resetAnnouncement();
+        if (!completionMessage || command.type !== "delete") resetAnnouncement();
         await loadAnnouncements(completionMessage, true);
       }
     } catch (error) {
-      showAtlasCommand(`Unresolved command ${command.requestId}: ${error.message}. Check or resubmit the same command.`);
+      const batch = atlasPending?.deleteBatch;
+      const progress = batch ? ` ${deleteBatchSummary(batch)} ${batch.remaining.length + 1} pending.` : "";
+      showAtlasCommand(`Unresolved command ${command.requestId}: ${error.message}. Check or resubmit the same command.${progress}`);
     } finally {
       atlasCommandBusy = false;
       $("announcementCommandCheck").disabled = false;
@@ -270,15 +301,22 @@
       updateBulkClear();
     }
   }
-  async function submitAtlasMutation(type, fields, source) {
+  async function submitAtlasMutation(type, fields, source, deleteBatch) {
     if (!navigator.locks) throw Error("Exclusive command locking is unavailable. Nothing was submitted.");
     await navigator.locks.request("announcement-atlas-command", async () => {
       const mode = await ensureAnnouncementMode(true);
       if (mode.mode !== "atlas") throw Error("Announcement mode changed. Reload before submitting.");
       atlasGuard();
       const command = {requestId: crypto.randomUUID(), type, ...fields};
-      try { saveAtlasPending({actor: announcementMode.actor, environment: announcementMode.environment, command, ...(source ? {source} : {})}); }
-      catch { throw Error("Persistent command storage is unavailable. Nothing was submitted."); }
+      try {
+        saveAtlasPending({
+          actor: mode.actor,
+          environment: mode.environment,
+          command,
+          ...(source ? {source} : {}),
+          ...(deleteBatch ? {deleteBatch} : {}),
+        });
+      } catch { throw Error("Persistent command storage is unavailable. Nothing was submitted."); }
       showAtlasCommand(`Pending command ${command.requestId}.`);
       try { await atlasPost(command); } catch { /* The original ID must be reconciled even after a timeout. */ }
     });
@@ -444,9 +482,25 @@
   function clearableAnnouncement(item) {
     return ["active", "scheduled"].includes(announcementStatus(item));
   }
+  function deleteCommand(announcementId) {
+    return {requestId: crypto.randomUUID(), type: "delete", announcementId};
+  }
+  function deleteBatchSummary(batch) {
+    const failures = batch.failures.length;
+    const protectedMessage = batch.protected ? ` ${batch.protected} were Active or Scheduled.` : "";
+    const failureMessage = failures ? ` ${failures} failed (${[...new Set(batch.failures)].join(", ")}).` : "";
+    return `Deleted ${batch.deleted} announcements. ${batch.protected + failures} were not deleted.${protectedMessage}${failureMessage}`;
+  }
+  function selectedClearableIds() {
+    return announcementRows.filter((item) => selectedAnnouncementIds.has(item.id) && clearableAnnouncement(item))
+      .map((item) => item.id);
+  }
   function updateBulkClear() {
-    $("announcementBulkClear").disabled = announcementMode?.mode !== "atlas" ||
-      announcementBusy || !!atlasPending || selectedAnnouncementIds.size === 0;
+    const blocked = announcementMode?.mode !== "atlas" || announcementBusy || !!atlasPending || atlasCommandBusy;
+    $("announcementBulkClear").disabled = blocked || selectedClearableIds().length === 0;
+    $("announcementDeleteAll").disabled = blocked || selectedAnnouncementIds.size === 0;
+    $("announcementSelectAll").disabled = blocked || announcementRows.length === selectedAnnouncementIds.size;
+    $("announcementClearSelected").disabled = blocked || selectedAnnouncementIds.size === 0;
   }
   function renderAnnouncementTable() {
     const first = announcementTablePage * announcementPageSize;
@@ -475,8 +529,8 @@
       if (!Array.isArray(data.announcements)) throw Error("Invalid announcement list response.");
       announcementRows = mode.mode === "atlas" || announcementType === "all" ? data.announcements
         : data.announcements.filter((item) => announcementStatus(item) === announcementType);
-      const clearableIds = new Set(announcementRows.filter(clearableAnnouncement).map((item) => item.id));
-      for (const id of selectedAnnouncementIds) if (!clearableIds.has(id)) selectedAnnouncementIds.delete(id);
+      const visibleIds = new Set(announcementRows.map((item) => item.id));
+      for (const id of selectedAnnouncementIds) if (!visibleIds.has(id)) selectedAnnouncementIds.delete(id);
       announcementTablePage = Math.min(announcementTablePage,
         Math.max(0, Math.ceil(announcementRows.length / announcementPageSize) - 1));
       renderAnnouncementTable();
@@ -493,8 +547,8 @@
       $("announcementListStatus").textContent = `${message ? message + " " : ""}Unable to refresh announcements: ${error.message}`;
     } finally { announcementReading--; }
   }
-  function announcementIcon(symbol, label, handler) {
-    const button = el("button", symbol, "btn");
+  function announcementIcon(symbol, label, handler, style = "") {
+    const button = el("button", symbol, `btn ${style}`.trim());
     button.type = "button";
     button.title = label;
     button.setAttribute("aria-label", label);
@@ -509,7 +563,7 @@
     checkbox.setAttribute("aria-label", `Select banner: ${item.message || item.id}`);
     const status = announcementStatus(item);
     const clearable = clearableAnnouncement(item);
-    checkbox.disabled = !clearable || announcementMode?.mode !== "atlas";
+    checkbox.disabled = announcementMode?.mode !== "atlas";
     checkbox.checked = selectedAnnouncementIds.has(item.id);
     checkbox.onchange = () => {
       if (checkbox.checked) selectedAnnouncementIds.add(item.id);
@@ -546,7 +600,7 @@
           if (!detail || detail.id !== item.id) throw Error("Invalid announcement detail response.");
           editAnnouncement(detail);
         } catch (error) { $("announcementFormStatus").textContent = `Unable to load detail: ${error.message}`; }
-      }), announcementIcon("×", "Clear Banner", () => clearAnnouncement(item)));
+      }), announcementIcon("×", "Clear Banner", () => clearAnnouncement(item), "announcement-clear"));
     } else if (announcementMode?.mode === "atlas") {
       const remove = announcementIcon("🗑", "Delete permanently", async () => {
         if (announcementBusy || !confirm("Permanently delete this announcement? This cannot be undone.")) return;
@@ -555,12 +609,12 @@
         try { await submitAtlasMutation("delete", {announcementId: item.id}); }
         catch (error) { $("announcementListStatus").textContent = error.message; }
         finally { announcementBusy = false; remove.disabled = false; updateBulkClear(); }
-      });
+      }, "announcement-delete");
       buttons.append(remove);
     }
     actions.append(buttons);
-    row.append(selection, el("td", item.message || "", "announcement-message"), state, targetCell,
-      el("td", `${item.startsAt || "Immediate"} → ${item.endsAt || "No expiration"}${item.timezone ? ` · ${item.timezone}` : ""}`), actions);
+    row.append(selection, actions, el("td", item.message || "", "announcement-message"), state, targetCell,
+      el("td", `${item.startsAt || "Immediate"} → ${item.endsAt || "No expiration"}${item.timezone ? ` · ${item.timezone}` : ""}`));
     $("announcementList").append(row);
   }
   $("announcementSearchType").onclick = () => {
@@ -578,16 +632,48 @@
     if ((announcementTablePage + 1) * announcementPageSize < announcementRows.length) announcementTablePage++;
     renderAnnouncementTable();
   };
-  $("announcementBulkClear").onclick = async () => {
+  $("announcementSelectAll").onclick = () => {
+    for (const item of announcementRows) selectedAnnouncementIds.add(item.id);
+    renderAnnouncementTable();
+  };
+  $("announcementClearSelected").onclick = () => {
+    selectedAnnouncementIds.clear();
+    renderAnnouncementTable();
+  };
+  $("announcementDeleteAll").onclick = async () => {
     if (announcementBusy || atlasPending || selectedAnnouncementIds.size === 0) return;
-    if (selectedAnnouncementIds.size > 100) {
+    const eligible = announcementRows.filter((item) => selectedAnnouncementIds.has(item.id) &&
+      ["cleared", "expired"].includes(announcementStatus(item))).map((item) => item.id);
+    const batch = {
+      remaining: eligible.slice(1),
+      selected: [...selectedAnnouncementIds],
+      deleted: 0,
+      protected: selectedAnnouncementIds.size - eligible.length,
+      failures: [],
+    };
+    if (!eligible.length) {
+      $("announcementListStatus").textContent = deleteBatchSummary(batch);
+      return;
+    }
+    const skipMessage = batch.protected ? ` ${batch.protected} Active or Scheduled announcements will be skipped.` : "";
+    if (!confirm(`Permanently delete ${eligible.length} selected Cleared or Expired announcements?${skipMessage}`)) return;
+    announcementBusy = true;
+    updateBulkClear();
+    try { await submitAtlasMutation("delete", {announcementId: eligible[0]}, undefined, batch); }
+    catch (error) { $("announcementListStatus").textContent = error.message; }
+    finally { announcementBusy = false; updateBulkClear(); }
+  };
+  $("announcementBulkClear").onclick = async () => {
+    const clearableIds = selectedClearableIds();
+    if (announcementBusy || atlasPending || clearableIds.length === 0) return;
+    if (clearableIds.length > 100) {
       $("announcementListStatus").textContent = "Select at most 100 banners per request.";
       return;
     }
-    if (!confirm(`Clear ${selectedAnnouncementIds.size} selected banners?`)) return;
+    if (!confirm(`Clear ${clearableIds.length} selected banners?`)) return;
     announcementBusy = true;
     updateBulkClear();
-    try { await submitAtlasMutation("bulk-clear", {announcementIds: [...selectedAnnouncementIds]}); }
+    try { await submitAtlasMutation("bulk-clear", {announcementIds: clearableIds}); }
     catch (error) { $("announcementListStatus").textContent = error.message; }
     finally { announcementBusy = false; updateBulkClear(); }
   };
