@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -264,6 +265,7 @@ func (app *Application) adminAnnouncementsHandler(w http.ResponseWriter, r *http
 	}
 	resp, err := app.announcements.client.Do(req)
 	if err != nil {
+		log.Print("announcements http upstream category=transport")
 		announcementUpstreamFailure(w)
 		return
 	}
@@ -274,6 +276,7 @@ func (app *Application) adminAnnouncementsHandler(w http.ResponseWriter, r *http
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil || len(data) > limit {
+		log.Print("announcements http upstream category=invalid_response")
 		announcementUpstreamFailure(w)
 		return
 	}
@@ -296,6 +299,7 @@ func (app *Application) adminAnnouncementsHandler(w http.ResponseWriter, r *http
 		expected = http.StatusCreated
 	}
 	if resp.StatusCode != expected {
+		log.Print("announcements http upstream category=unexpected_status")
 		announcementUpstreamFailure(w)
 		return
 	}
@@ -340,5 +344,6 @@ func (app *Application) adminAnnouncementsHandler(w http.ResponseWriter, r *http
 }
 
 func announcementUpstreamFailure(w http.ResponseWriter) {
+	log.Print("announcements http upstream category=unconfirmed")
 	adminUsersError(w, http.StatusBadGateway, "The announcement operation could not be confirmed. Refresh before retrying.")
 }

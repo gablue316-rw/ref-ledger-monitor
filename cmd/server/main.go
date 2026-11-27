@@ -73,12 +73,13 @@ type Config struct {
 }
 
 type Application struct {
-	config        Config
-	db            *mongo.Database
-	logs          *logsRepository
-	logsUpdater   *logsThresholdUpdater
-	logsCommands  *logsCommandRepository
-	announcements *announcementProxy
+	config               Config
+	db                   *mongo.Database
+	logs                 *logsRepository
+	logsUpdater          *logsThresholdUpdater
+	logsCommands         *logsCommandRepository
+	announcements        *announcementProxy
+	announcementCommands *announcementCommandRepository
 }
 
 func main() {
@@ -131,6 +132,13 @@ func run() error {
 		config:        cfg,
 		db:            client.Database(cfg.MongoDBName),
 		announcements: announcements,
+	}
+	app.announcementCommands, err = configureAnnouncementCommands(cfg)
+	if err != nil {
+		return err
+	}
+	if app.announcementCommands != nil {
+		defer app.announcementCommands.close()
 	}
 	app.logs, err = configureLogsRepository()
 	if err != nil {

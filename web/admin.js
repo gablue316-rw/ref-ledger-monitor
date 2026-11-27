@@ -13,7 +13,7 @@
     $("adminNotice").style.color = error ? "#a32020" : "";
   }
   async function request(path, options = {}) {
-    const { allowMissing = false, ...fetchOptions } = options;
+    const { allowMissing = false, rejectAccepted = false, ...fetchOptions } = options;
     const response = await fetch(adminURL(path), {
       cache: "no-store",
       credentials: "same-origin",
@@ -26,6 +26,7 @@
         "Authentication required. Sign in to the monitor administrator service and reload this page.",
       );
     }
+    if (rejectAccepted && response.status === 202) throw Error("Request accepted but not confirmed.");
     const text = await response.text();
     let data = {};
     try {
@@ -42,9 +43,10 @@
     }
     return data;
   }
-  function post(path, payload, version) {
+  function post(path, payload, version, rejectAccepted = false) {
     return request(path, {
       method: "POST",
+      rejectAccepted,
       headers: {
         "Content-Type": "application/json",
         "X-Ref-Ledger-Admin": "1",
@@ -116,7 +118,159 @@
     .forEach((b) => (b.onclick = () => (location.hash = b.dataset.page)));
   window.addEventListener("hashchange", navigate);
   const announcementBase = "api/admin/announcements";
-  let announcementLoad = 0, announcementBusy = false, announcementEdit = null;
+  let announcementLoad = 0, announcementBusy = false, announcementReading = 0, announcementEdit = null;
+  const announcementPendingKey = "announcementAtlasPendingV1";
+  let announcementMode = null, announcementModePromise = null, atlasPending = null;
+  let atlasStorageError = "", atlasCommandBusy = false;
+  let announcementCursors = [""], announcementPage = 0;
+  try {
+    const raw = localStorage.getItem(announcementPendingKey);
+    if (raw) {
+      atlasPending = JSON.parse(raw);
+      if (!atlasPending || !atlasPending.command || !atlasPending.command.requestId ||
+          !atlasPending.actor || !atlasPending.environment) throw Error("Invalid saved command.");
+    }
+  } catch {
+    atlasStorageError = "Persistent command storage is unavailable or invalid. Resolve it before using announcements.";
+  }
+  function showAtlasCommand(message) {
+    $("announcementCommandStatus").textContent = message;
+    $("announcementCommandCheck").hidden = !atlasPending;
+    $("announcementCommandRetry").hidden = !atlasPending;
+    $("announcementCommandPrivacy").hidden = !atlasPending;
+    $("announcementCommandCheck").disabled = atlasCommandBusy;
+    $("announcementCommandRetry").disabled = atlasCommandBusy;
+  }
+  function saveAtlasPending(value) {
+    const serialized = value ? JSON.stringify(value) : null;
+    if (serialized) localStorage.setItem(announcementPendingKey, serialized);
+    else localStorage.removeItem(announcementPendingKey);
+    if (localStorage.getItem(announcementPendingKey) !== serialized) throw Error("Persistent storage verification failed.");
+    atlasPending = value;
+  }
+  async function ensureAnnouncementMode(refresh = false) {
+    if (refresh) announcementMode = null;
+    if (announcementMode) return announcementMode;
+    if (!announcementModePromise) announcementModePromise = request(`${announcementBase}/atlas`).then((data) => {
+      if (!data || !["atlas", "http"].includes(data.mode) ||
+          (data.mode === "atlas" && (!data.actor || !data.environment))) throw Error("Invalid announcement mode response.");
+      announcementMode = data;
+      return data;
+    }).finally(() => { announcementModePromise = null; });
+    return announcementModePromise;
+  }
+  function atlasIdentityMatches() {
+    return announcementMode && announcementMode.mode === "atlas" && atlasPending &&
+      atlasPending.actor === announcementMode.actor && atlasPending.environment === announcementMode.environment;
+  }
+  function atlasGuard() {
+    if (atlasStorageError) throw Error(atlasStorageError);
+    let raw;
+    try { raw = localStorage.getItem(announcementPendingKey); }
+    catch { throw Error("Persistent command storage is unavailable."); }
+    if (raw && (!atlasPending || raw !== JSON.stringify(atlasPending))) {
+      throw Error("Another unresolved command exists on this device. Reload and reconcile it first.");
+    }
+    if (atlasPending) throw Error("An announcement command is unresolved. Check or resubmit the original command first.");
+  }
+  async function atlasPost(command) {
+    return post(`${announcementBase}/atlas/commands`, command);
+  }
+  async function atlasStatus(command) {
+    const status = await request(`${announcementBase}/atlas/commands/${encodeURIComponent(command.requestId)}`);
+    if (!status || status.requestId !== command.requestId) throw Error("Invalid command status response.");
+    return status;
+  }
+  async function atlasRead(type, fields = {}) {
+    const command = {requestId: crypto.randomUUID(), type, ...fields};
+    try { await atlasPost(command); } catch { /* Reconcile using the original ID. */ }
+    for (let attempt = 0; attempt < 18; attempt++) {
+      let status;
+      try { status = await atlasStatus(command); }
+      catch (error) {
+        if (error.status !== 404) throw error;
+        await atlasPost(command);
+      }
+      if (status && status.state === "completed") {
+        if (status.outcome !== "success") throw Error(`Command ${status.outcome || "failed"}: ${status.reason || "unknown reason"}`);
+        return status.result;
+      }
+      if (attempt < 17) await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+    throw Error("Command unresolved; try the read again later.");
+  }
+  async function atlasPages(type, fields, key) {
+    let after = "", items = [];
+    const cursors = new Set();
+    do {
+      const result = await atlasRead(type, {...fields, ...(after ? {after} : {})});
+      if (!result || !Array.isArray(result[key]) || typeof result.nextCursor !== "string")
+        throw Error("Invalid paginated command result.");
+      items.push(...result[key]);
+      after = result.nextCursor;
+      if (after && cursors.has(after)) throw Error("Repeated pagination cursor.");
+      if (after) cursors.add(after);
+    } while (after);
+    return items;
+  }
+  async function checkAtlasCommand(resubmit = false) {
+    if (!atlasPending || atlasCommandBusy) return;
+    atlasCommandBusy = true;
+    const command = atlasPending.command;
+    showAtlasCommand(`Pending command ${command.requestId}.`);
+    try {
+      if (!navigator.locks) throw Error("Exclusive command locking is unavailable. Update the WebView.");
+      let confirmed = false;
+      await navigator.locks.request("announcement-atlas-command", async () => {
+        if (localStorage.getItem(announcementPendingKey) !== JSON.stringify(atlasPending))
+          throw Error("Saved command changed in another tab. Reload and reconcile it.");
+        await ensureAnnouncementMode(true);
+        if (!atlasIdentityMatches()) throw Error("The current operator or environment differs from the saved command. Restore the original context.");
+        if (resubmit) await atlasPost(command);
+        let status;
+        try { status = await atlasStatus(command); }
+        catch (error) {
+          if (error.status !== 404) throw error;
+          await atlasPost(command);
+          status = await atlasStatus(command);
+        }
+        if (status.state === "completed" && ["success", "rejected", "failed"].includes(status.outcome)) {
+          const label = status.outcome === "success" ? "Confirmed" : status.outcome === "rejected" ? "Rejected" : "Failed";
+          saveAtlasPending(null);
+          showAtlasCommand(`${label} command ${command.requestId}${status.reason ? `: ${status.reason}` : "."}`);
+          confirmed = status.outcome === "success";
+        } else if (status.state === "pending" || status.state === "processing") {
+          showAtlasCommand(`Pending command ${command.requestId} (${status.state}).`);
+        } else {
+          showAtlasCommand(`Unresolved command ${command.requestId}: invalid status.`);
+        }
+      });
+      if (confirmed) {
+        resetAnnouncement();
+        await loadAnnouncements("", true);
+      }
+    } catch (error) {
+      showAtlasCommand(`Unresolved command ${command.requestId}: ${error.message}. Check or resubmit the same command.`);
+    } finally {
+      atlasCommandBusy = false;
+      $("announcementCommandCheck").disabled = false;
+      $("announcementCommandRetry").disabled = false;
+    }
+  }
+  async function submitAtlasMutation(type, fields) {
+    if (!navigator.locks) throw Error("Exclusive command locking is unavailable. Nothing was submitted.");
+    await navigator.locks.request("announcement-atlas-command", async () => {
+      const mode = await ensureAnnouncementMode(true);
+      if (mode.mode !== "atlas") throw Error("Announcement mode changed. Reload before submitting.");
+      atlasGuard();
+      const command = {requestId: crypto.randomUUID(), type, ...fields};
+      try { saveAtlasPending({actor: announcementMode.actor, environment: announcementMode.environment, command}); }
+      catch { throw Error("Persistent command storage is unavailable. Nothing was submitted."); }
+      showAtlasCommand(`Pending command ${command.requestId}.`);
+      try { await atlasPost(command); } catch { /* The original ID must be reconciled even after a timeout. */ }
+    });
+    await checkAtlasCommand();
+  }
   let announcementCreateUncertain = false;
   try { announcementCreateUncertain = sessionStorage.getItem("announcementCreateUncertain") === "1"; }
   catch { /* The in-memory guard still applies if storage is unavailable. */ }
@@ -173,7 +327,7 @@
     announcementSearchButtons();
   }
   function announcementSearchButtons() {
-    $("announcementPrevious").disabled = announcementSearchOffset === 0;
+    $("announcementPrevious").disabled = announcementMode?.mode === "atlas" ? announcementPage === 0 : announcementSearchOffset === 0;
     $("announcementNext").disabled = !announcementSearchMore;
   }
   async function searchAnnouncementAccounts(offset) {
@@ -188,21 +342,29 @@
     announcementSearchButtons();
     $("announcementSearchStatus").textContent = "Searching accounts…";
     try {
-      const data = await request(`${announcementBase}/users?` + new URLSearchParams({
+      const mode = await ensureAnnouncementMode();
+      const data = mode.mode === "atlas" ? await atlasRead("accounts", {
+        ...(announcementSearchQuery ? {username: announcementSearchQuery} : {}),
+        ...(announcementCursors[announcementPage] ? {after: announcementCursors[announcementPage]} : {}),
+      }) : await request(`${announcementBase}/users?` + new URLSearchParams({
         username: announcementSearchQuery, offset: String(offset),
       }));
       if (generation !== announcementTargetGeneration) return;
-      if (!Array.isArray(data.users)) throw Error("Invalid user directory response.");
-      announcementAccounts = data.users.map((u) => ({
-        tenantId: u.tenantId, userId: u.id, username: u.username, name: u.name,
+      const users = mode.mode === "atlas" ? data?.accounts : data.users;
+      if (!Array.isArray(users)) throw Error("Invalid user directory response.");
+      announcementAccounts = users.map((u) => ({
+        tenantId: u.tenantId, userId: mode.mode === "atlas" ? u.userId : u.id, username: u.username, name: u.name,
       })).filter(accountValid);
       for (const [index, account] of announcementAccounts.entries()) {
         $("announcementAccount").append(announcementOption(String(index),
           `${account.username} · ${account.name || "Unnamed"} · tenant ${account.tenantId} · user ${account.userId}`));
       }
-      announcementSearchMore = data.hasMore === true;
+      if (mode.mode === "atlas" && typeof data.nextCursor !== "string") throw Error("Invalid account cursor.");
+      announcementSearchMore = mode.mode === "atlas" ? !!data.nextCursor : data.hasMore === true;
+      if (mode.mode === "atlas") announcementCursors[announcementPage + 1] = data.nextCursor;
       $("announcementSearchStatus").textContent = announcementAccounts.length
-        ? `Select an account. Results ${offset + 1}–${offset + announcementAccounts.length}${announcementSearchMore ? " · more available" : ""}.`
+        ? mode.mode === "atlas" ? `Select an account. Page ${announcementPage + 1}${announcementSearchMore ? " · more available" : ""}.`
+          : `Select an account. Results ${offset + 1}–${offset + announcementAccounts.length}${announcementSearchMore ? " · more available" : ""}.`
         : "No usable accounts found. Try another search.";
     } catch (error) {
       if (generation !== announcementTargetGeneration) return;
@@ -213,6 +375,14 @@
   }
   async function verifiedAnnouncementSessions(account) {
     if (!accountValid(account)) throw Error("Select an account first.");
+    const mode = await ensureAnnouncementMode();
+    if (mode.mode === "atlas") {
+      const sessions = await atlasPages("sessions", {tenantId: account.tenantId, userId: account.userId}, "sessions");
+      if (!sessions.every((session) => sameAccount(account, session) &&
+          typeof session.sessionTargetId === "string" && session.sessionTargetId))
+        throw Error("Session identities were incomplete or mismatched.");
+      return sessions;
+    }
     let data;
     try {
       data = await request(`${announcementBase}/sessions?` + new URLSearchParams({username: account.username}));
@@ -250,12 +420,17 @@
     }
   }
   async function loadAnnouncements(message = "", afterWrite = false) {
-    if (announcementBusy && !afterWrite) return;
+    if ((announcementBusy || announcementReading) && !afterWrite) return;
+    announcementReading++;
     const generation = ++announcementLoad;
     if (announcementCreateUncertain) $("announcementAcknowledge").disabled = true;
     $("announcementListStatus").textContent = message || "Loading announcements…";
     try {
-      const data = await request(announcementBase);
+      const mode = await ensureAnnouncementMode();
+      if (atlasPending && !atlasCommandBusy) checkAtlasCommand();
+      const data = mode.mode === "atlas"
+        ? {announcements: await atlasPages("list", {}, "announcements")}
+        : await request(announcementBase);
       if (generation !== announcementLoad) return;
       if (!Array.isArray(data.announcements)) throw Error("Invalid announcement list response.");
       $("announcementList").replaceChildren();
@@ -268,7 +443,7 @@
       if (generation !== announcementLoad) return;
       $("announcementList").replaceChildren();
       $("announcementListStatus").textContent = `${message ? message + " " : ""}Unable to refresh announcements: ${error.message}`;
-    }
+    } finally { announcementReading--; }
   }
   function renderAnnouncement(item) {
     const card = el("article", "", "announcement-card");
@@ -300,7 +475,14 @@
     const actions = el("div", "", "toolbar");
     const edit = el("button", "Edit", "btn");
     edit.type = "button";
-    edit.onclick = () => editAnnouncement(item);
+    edit.onclick = async () => {
+      try {
+        const mode = await ensureAnnouncementMode();
+        const detail = mode.mode === "atlas" ? await atlasRead("detail", {announcementId: item.id}) : item;
+        if (!detail || detail.id !== item.id) throw Error("Invalid announcement detail response.");
+        editAnnouncement(detail);
+      } catch (error) { $("announcementFormStatus").textContent = `Unable to load detail: ${error.message}`; }
+    };
     const clear = el("button", "Clear Banner", "btn");
     clear.type = "button";
     clear.onclick = () => clearAnnouncement(item);
@@ -396,7 +578,13 @@
     ++announcementLoad;
     if (announcementCreateUncertain) $("announcementAcknowledge").disabled = true;
     try {
-      await post(`${announcementBase}/${encodeURIComponent(item.id)}/clear`, {});
+      const mode = await ensureAnnouncementMode(true);
+      atlasGuard();
+      if (mode.mode === "atlas") {
+        await submitAtlasMutation("clear", {announcementId: item.id});
+        return;
+      }
+      await post(`${announcementBase}/${encodeURIComponent(item.id)}/clear`, {}, undefined, true);
       if (announcementEdit && announcementEdit.id === item.id) resetAnnouncement();
       await loadAnnouncements("Announcement cleared.", true);
     } catch (error) {
@@ -410,6 +598,14 @@
   $("announcementForm").onsubmit = async (event) => {
     event.preventDefault();
     if (announcementBusy) return;
+    try {
+      await ensureAnnouncementMode(true);
+      atlasGuard();
+    } catch (error) {
+      $("announcementFormStatus").textContent = error.message;
+      return;
+    }
+    if (announcementBusy) return;
     if (!announcementEdit && announcementCreateUncertain) {
       $("announcementFormStatus").textContent = "Review a successfully refreshed list and acknowledge it before publishing again.";
       return;
@@ -422,10 +618,22 @@
     if (announcementCreateUncertain) $("announcementAcknowledge").disabled = true;
     $("announcementSave").disabled = true;
     const creating = !announcementEdit;
+    if (announcementMode.mode === "atlas") {
+      try {
+        await submitAtlasMutation(creating ? "publish" : "edit",
+          {...(!creating ? {announcementId: announcementEdit.id} : {}), request: payload});
+      } catch (error) { $("announcementFormStatus").textContent = error.message; }
+      finally {
+        announcementBusy = false;
+        $("announcementSave").disabled = false;
+      }
+      return;
+    }
     if (creating) persistAnnouncementUncertainty(true);
     try {
       await request(announcementEdit ? `${announcementBase}/${encodeURIComponent(announcementEdit.id)}` : announcementBase, {
         method: announcementEdit ? "PUT" : "POST",
+        rejectAccepted: true,
         headers: {"Content-Type": "application/json", "X-Ref-Ledger-Admin": "1"},
         body: JSON.stringify(payload),
       });
@@ -459,20 +667,30 @@
   $("announcementAudience").onchange = announcementAudienceChanged;
   $("announcementSearchButton").onclick = () => {
     announcementSearchQuery = $("announcementSearch").value.trim();
+    announcementCursors = [""];
+    announcementPage = 0;
     if (!announcementSearchQuery) {
       $("announcementSearchStatus").textContent = "Enter a username to search.";
       return;
     }
     return searchAnnouncementAccounts(0);
   };
-  $("announcementPrevious").onclick = () => searchAnnouncementAccounts(Math.max(0, announcementSearchOffset - 50));
-  $("announcementNext").onclick = () => searchAnnouncementAccounts(announcementSearchOffset + 50);
+  $("announcementPrevious").onclick = () => {
+    if (announcementMode?.mode === "atlas") announcementPage = Math.max(0, announcementPage - 1);
+    return searchAnnouncementAccounts(Math.max(0, announcementSearchOffset - 50));
+  };
+  $("announcementNext").onclick = () => {
+    if (announcementMode?.mode === "atlas" && announcementSearchMore) announcementPage++;
+    return searchAnnouncementAccounts(announcementSearchOffset + 50);
+  };
   $("announcementAccount").onchange = () => {
     const value = $("announcementAccount").value;
     announcementAccount = value === "" ? null : announcementAccounts[Number(value)];
     clearAnnouncementSessions();
   };
   $("announcementSessionsButton").onclick = () => loadAnnouncementSessions();
+  $("announcementCommandCheck").onclick = () => checkAtlasCommand();
+  $("announcementCommandRetry").onclick = () => checkAtlasCommand(true);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && location.hash === "#announcements") loadAnnouncements();
   });
@@ -482,6 +700,11 @@
   setInterval(() => {
     if (!document.hidden && location.hash === "#announcements") loadAnnouncements();
   }, 30000);
+  setInterval(() => {
+    if (!document.hidden && location.hash === "#announcements" && atlasPending) checkAtlasCommand();
+  }, 5000);
+  if (atlasStorageError) showAtlasCommand(atlasStorageError);
+  else if (atlasPending) showAtlasCommand(`Unresolved command ${atlasPending.command.requestId}. Check or resubmit the same command.`);
   $("announcementAcknowledge").hidden = !announcementCreateUncertain;
   $("announcementAcknowledge").disabled = true;
   resetAnnouncement();

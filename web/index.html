@@ -737,6 +737,13 @@
               </label>
               <p>Dates and local times use this timezone. RFC 3339 timestamps with an offset are also accepted.</p>
               <p id="announcementFormStatus" role="status" aria-live="polite"></p>
+              <p id="announcementCommandStatus" role="status" aria-live="polite"></p>
+              <p>Atlas changes require persistent device storage and Web Locks. Older Android WebViews without Web Locks cannot submit changes; update the WebView.</p>
+              <div class="toolbar">
+                <button class="btn" id="announcementCommandCheck" type="button" hidden>Check command</button>
+                <button class="btn" id="announcementCommandRetry" type="button" hidden>Resubmit same command</button>
+              </div>
+              <p id="announcementCommandPrivacy" hidden>Unresolved commands are stored on this device for recovery, including any message. Use a trusted device.</p>
               <button class="btn" id="announcementAcknowledge" type="button" hidden disabled>I reviewed the refreshed list</button>
               <div class="toolbar">
                 <button class="btn primary" id="announcementSave" type="submit">Publish</button>
