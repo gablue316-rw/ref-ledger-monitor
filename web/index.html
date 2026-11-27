@@ -685,7 +685,7 @@
         <div class="announcement-layout">
           <div class="panel">
             <div class="panelhead">
-              <div><h2>Active & scheduled</h2><p>Uncleared announcements that have not expired.</p></div>
+              <div><h2 id="announcementListTitle">Active &amp; scheduled</h2><label id="announcementHistoryControl" hidden><input type="checkbox" id="announcementHistory"> Show cleared and expired announcements</label></div>
               <button class="btn" type="button" id="announcementRefresh">Refresh</button>
             </div>
             <p id="announcementListStatus" role="status" aria-live="polite"></p>
@@ -1970,6 +1970,19 @@
         <div class="toolbar">
           <button class="btn" type="button" id="dialogCancel">Cancel</button
           ><button class="btn primary" id="dialogConfirm">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="userMessageDialog" aria-labelledby="userMessageTitle">
+      <form id="userMessageForm">
+        <h2 id="userMessageTitle">Send message</h2>
+        <p id="userMessageRecipient"></p>
+        <label for="userMessageText">Message</label>
+        <textarea id="userMessageText" rows="5" maxlength="4000" required style="display:block;width:100%;box-sizing:border-box"></textarea>
+        <p id="userMessageError" role="alert"></p>
+        <div class="toolbar">
+          <button class="btn primary" id="userMessageSend" type="submit">Send</button>
+          <button class="btn" id="userMessageCancel" type="button">Cancel</button>
         </div>
       </form>
     </dialog>

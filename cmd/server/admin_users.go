@@ -34,12 +34,14 @@ type adminUserRecord struct {
 }
 
 type adminUserSession struct {
+	TargetID  string    `json:"sessionTargetId,omitempty"`
 	SessionID string    `bson:"sessionId" json:"sessionId"`
 	ExpiresAt time.Time `bson:"expiresAt" json:"expiresAt"`
 	Client    string    `json:"client"`
 }
 
 type storedSession struct {
+	TargetID  string    `bson:"targetId"`
 	SessionID string    `bson:"sessionId"`
 	ExpiresAt time.Time `bson:"expiresAt"`
 	Username  string    `bson:"username"`
@@ -173,7 +175,7 @@ func (app *Application) adminUsersSearch(w http.ResponseWriter, r *http.Request)
 	sessionMap := make(map[string][]adminUserSession)
 	if len(pairs) > 0 {
 		sessionCursor, err := db.Collection("sessions").Find(ctx, bson.M{"$or": pairs}, options.Find().
-			SetProjection(bson.M{"_id": 0, "sessionId": 1, "expiresAt": 1, "username": 1, "tenantId": 1, "type": 1, "platform": 1, "client": 1}).
+			SetProjection(bson.M{"_id": 0, "sessionId": 1, "targetId": 1, "expiresAt": 1, "username": 1, "tenantId": 1, "type": 1, "platform": 1, "client": 1}).
 			SetSort(bson.D{{Key: "expiresAt", Value: -1}, {Key: "sessionId", Value: 1}}))
 		if err != nil {
 			adminUsersError(w, http.StatusInternalServerError, "Unable to load sessions.")
@@ -189,6 +191,7 @@ func (app *Application) adminUsersSearch(w http.ResponseWriter, r *http.Request)
 			key := session.TenantID + "\x00" + session.Username
 			sessionMap[key] = append(sessionMap[key], adminUserSession{
 				SessionID: session.SessionID,
+				TargetID:  session.TargetID,
 				ExpiresAt: session.ExpiresAt,
 				Client:    session.clientLabel(),
 			})

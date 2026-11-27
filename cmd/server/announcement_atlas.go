@@ -165,11 +165,11 @@ func validAtlasInput(in AtlasAnnouncementInput) bool {
 		return s != "" && len(s) <= 256 && strings.TrimSpace(s) == s && !strings.ContainsAny(s, "\x00\r\n")
 	}
 	switch in.Type {
-	case "list":
+	case "list", "history":
 		if in.After != "" && !logsCommandID.MatchString(in.After) {
 			return false
 		}
-	case "detail", "clear", "edit":
+	case "detail", "clear", "edit", "delete":
 		if !logsCommandID.MatchString(in.AnnouncementID) {
 			return false
 		}
@@ -185,8 +185,8 @@ func validAtlasInput(in AtlasAnnouncementInput) bool {
 	default:
 		return false
 	}
-	if in.Type != "list" && in.Type != "accounts" && in.Type != "sessions" && in.After != "" ||
-		in.Type != "detail" && in.Type != "clear" && in.Type != "edit" && in.AnnouncementID != "" ||
+	if in.Type != "list" && in.Type != "history" && in.Type != "accounts" && in.Type != "sessions" && in.After != "" ||
+		in.Type != "detail" && in.Type != "clear" && in.Type != "edit" && in.Type != "delete" && in.AnnouncementID != "" ||
 		in.Type != "accounts" && in.Username != "" ||
 		in.Type != "sessions" && (in.TenantID != "" || in.UserID != "") ||
 		(in.Type == "publish" || in.Type == "edit") != (in.Request != nil) {
@@ -349,13 +349,13 @@ func validAtlasFields(data []byte, kind string) bool {
 	}
 	allowed := map[string]bool{"requestId": true, "type": true}
 	switch kind {
-	case "list":
+	case "list", "history":
 		allowed["after"] = true
 	case "accounts":
 		allowed["after"], allowed["username"] = true, true
 	case "sessions":
 		allowed["after"], allowed["tenantId"], allowed["userId"] = true, true, true
-	case "detail", "clear":
+	case "detail", "clear", "delete":
 		allowed["announcementId"] = true
 	case "publish":
 		allowed["request"] = true
@@ -452,9 +452,9 @@ func safeAnnouncementResult(kind string, raw bson.Raw) (any, error) {
 		return out, nil
 	}
 	switch kind {
-	case "detail", "publish", "edit", "clear":
+	case "detail", "publish", "edit", "clear", "delete":
 		return clean(doc, announcementFields, true)
-	case "list", "accounts", "sessions":
+	case "list", "history", "accounts", "sessions":
 		key, fields := "announcements", announcementFields
 		if kind == "accounts" {
 			key, fields = "accounts", []string{"tenantId", "userId", "username"}
@@ -472,7 +472,7 @@ func safeAnnouncementResult(kind string, raw bson.Raw) (any, error) {
 		}
 		result := make([]map[string]any, 0, len(items))
 		for _, item := range items {
-			safe, err := clean(item, fields, kind == "list")
+			safe, err := clean(item, fields, kind == "list" || kind == "history")
 			if err != nil {
 				return nil, err
 			}

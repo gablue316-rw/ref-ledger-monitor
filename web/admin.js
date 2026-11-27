@@ -133,8 +133,9 @@
   } catch {
     atlasStorageError = "Persistent command storage is unavailable or invalid. Resolve it before using announcements.";
   }
-  function showAtlasCommand(message) {
+  function showAtlasCommand(message, source = atlasPending?.source) {
     $("announcementCommandStatus").textContent = message;
+    if (source === "users") $("userMessage").textContent = message;
     $("announcementCommandCheck").hidden = !atlasPending;
     $("announcementCommandRetry").hidden = !atlasPending;
     $("announcementCommandPrivacy").hidden = !atlasPending;
@@ -236,8 +237,9 @@
         }
         if (status.state === "completed" && ["success", "rejected", "failed"].includes(status.outcome)) {
           const label = status.outcome === "success" ? "Confirmed" : status.outcome === "rejected" ? "Rejected" : "Failed";
+          const source = atlasPending.source;
           saveAtlasPending(null);
-          showAtlasCommand(`${label} command ${command.requestId}${status.reason ? `: ${status.reason}` : "."}`);
+          showAtlasCommand(`${label} command ${command.requestId}${status.reason ? `: ${status.reason}` : "."}`, source);
           confirmed = status.outcome === "success";
         } else if (status.state === "pending" || status.state === "processing") {
           showAtlasCommand(`Pending command ${command.requestId} (${status.state}).`);
@@ -257,14 +259,14 @@
       $("announcementCommandRetry").disabled = false;
     }
   }
-  async function submitAtlasMutation(type, fields) {
+  async function submitAtlasMutation(type, fields, source) {
     if (!navigator.locks) throw Error("Exclusive command locking is unavailable. Nothing was submitted.");
     await navigator.locks.request("announcement-atlas-command", async () => {
       const mode = await ensureAnnouncementMode(true);
       if (mode.mode !== "atlas") throw Error("Announcement mode changed. Reload before submitting.");
       atlasGuard();
       const command = {requestId: crypto.randomUUID(), type, ...fields};
-      try { saveAtlasPending({actor: announcementMode.actor, environment: announcementMode.environment, command}); }
+      try { saveAtlasPending({actor: announcementMode.actor, environment: announcementMode.environment, command, ...(source ? {source} : {})}); }
       catch { throw Error("Persistent command storage is unavailable. Nothing was submitted."); }
       showAtlasCommand(`Pending command ${command.requestId}.`);
       try { await atlasPost(command); } catch { /* The original ID must be reconciled even after a timeout. */ }
@@ -428,15 +430,20 @@
     try {
       const mode = await ensureAnnouncementMode();
       if (atlasPending && !atlasCommandBusy) checkAtlasCommand();
+      const historyControl = $("announcementHistoryControl");
+      if (historyControl) historyControl.hidden = mode.mode !== "atlas";
+      const history = mode.mode === "atlas" && $("announcementHistory")?.checked;
       const data = mode.mode === "atlas"
-        ? {announcements: await atlasPages("list", {}, "announcements")}
+        ? {announcements: await atlasPages(history ? "history" : "list", {}, "announcements")}
         : await request(announcementBase);
       if (generation !== announcementLoad) return;
       if (!Array.isArray(data.announcements)) throw Error("Invalid announcement list response.");
       $("announcementList").replaceChildren();
-      for (const item of data.announcements) renderAnnouncement(item);
+      const title = $("announcementListTitle");
+      if (title) title.textContent = history ? "Cleared & expired" : "Active & scheduled";
+      for (const item of data.announcements) renderAnnouncement(item, history);
       $("announcementListStatus").textContent = (message ||
-        (data.announcements.length ? `${data.announcements.length} announcement(s) loaded.` : "No active or scheduled announcements.")) +
+        (data.announcements.length ? `${data.announcements.length} announcement(s) loaded.` : history ? "No cleared or expired announcements." : "No active or scheduled announcements.")) +
         (announcementCreateUncertain ? " Review the refreshed list and acknowledge it before publishing again." : "");
       if (announcementCreateUncertain) $("announcementAcknowledge").disabled = false;
     } catch (error) {
@@ -445,15 +452,30 @@
       $("announcementListStatus").textContent = `${message ? message + " " : ""}Unable to refresh announcements: ${error.message}`;
     } finally { announcementReading--; }
   }
-  function renderAnnouncement(item) {
+  function renderAnnouncement(item, history) {
     const card = el("article", "", "announcement-card");
     const scheduled = item.startsAt && Date.parse(item.startsAt) > Date.now();
-    card.append(el("strong", scheduled ? "Scheduled" : "Active"),
+    card.append(el("strong", history ? (item.cleared ? "Cleared" : "Expired") : scheduled ? "Scheduled" : "Active"),
       el("p", item.message || "", "announcement-message"),
       el("p", `Audience: ${item.audience || "unknown"}`),
       el("p", item.audience === "system" ? "Target: everyone" :
         `Target: ${item.username || "unknown"} · tenant ${item.tenantId || "unknown"} · user ${item.userId || "unknown"}${item.audience === "session" ? ` · session target ${item.sessionTargetId || "unknown"}` : ""}`),
       el("p", `Start: ${item.startsAt || "now"} · End: ${item.endsAt || "no expiration"} · Timezone: ${item.timezone || "not specified"}`));
+    if (history) {
+      const remove = el("button", "Delete permanently", "btn");
+      remove.type = "button";
+      remove.onclick = async () => {
+        if (announcementBusy || !confirm("Permanently delete this announcement? This cannot be undone.")) return;
+        announcementBusy = true;
+        remove.disabled = true;
+        try { await submitAtlasMutation("delete", {announcementId: item.id}); }
+        catch (error) { $("announcementListStatus").textContent = error.message; }
+        finally { announcementBusy = false; remove.disabled = false; }
+      };
+      card.append(remove);
+      $("announcementList").append(card);
+      return;
+    }
     if (item.audience === "session") {
       const status = el("p", "Session status: not checked.");
       const check = el("button", "Check session status", "btn");
@@ -663,6 +685,7 @@
     $("announcementAcknowledge").disabled = true;
     $("announcementFormStatus").textContent = "List reviewed. You may publish again.";
   };
+  if ($("announcementHistory")) $("announcementHistory").onchange = () => loadAnnouncements("", true);
   $("announcementRefresh").onclick = () => loadAnnouncements();
   $("announcementAudience").onchange = announcementAudienceChanged;
   $("announcementSearchButton").onclick = () => {
@@ -701,7 +724,8 @@
     if (!document.hidden && location.hash === "#announcements") loadAnnouncements();
   }, 30000);
   setInterval(() => {
-    if (!document.hidden && location.hash === "#announcements" && atlasPending) checkAtlasCommand();
+    if (!document.hidden && atlasPending &&
+        (location.hash === "#announcements" || (location.hash === "#users" && atlasPending.source === "users"))) checkAtlasCommand();
   }, 5000);
   if (atlasStorageError) showAtlasCommand(atlasStorageError);
   else if (atlasPending) showAtlasCommand(`Unresolved command ${atlasPending.command.requestId}. Check or resubmit the same command.`);
@@ -1221,6 +1245,80 @@
     };
     return b;
   }
+  let messageTarget, messageBusy = false;
+  function messageButton(user, session, unavailable) {
+    const button = el("button", "Message", "btn");
+    button.type = "button";
+    button.dataset.locked = String(unavailable);
+    button.disabled = unavailable || usersBusy || actionBusy;
+    if (unavailable) button.title = session
+      ? "This session is expired or unavailable for messaging. Refresh after the user signs in."
+      : "This user has no active sessions.";
+    button.onclick = () => {
+      messageTarget = {
+        audience: session ? "session" : "user",
+        username: user.username,
+        tenantId: user.tenantId,
+        userId: user.id,
+        ...(session ? {sessionTargetId: session.sessionTargetId} : {}),
+      };
+      $("userMessageForm").reset();
+      $("userMessageError").textContent = "";
+      $("userMessageRecipient").textContent = session
+        ? `${user.username} · ${user.tenantId} · ${session.client || "Session"} · ${session.sessionTargetId}`
+        : `${user.username} · ${user.tenantId} · All active sessions`;
+      $("userMessageDialog").showModal();
+      $("userMessageText").focus();
+    };
+    return button;
+  }
+
+  $("userMessageCancel").onclick = () => $("userMessageDialog").close();
+  $("userMessageDialog").addEventListener("cancel", (event) => {
+    if (messageBusy) event.preventDefault();
+  });
+  $("userMessageForm").onsubmit = async (event) => {
+    event.preventDefault();
+    if (messageBusy || announcementBusy || !messageTarget) return;
+    const message = $("userMessageText").value.trim();
+    if (!message || !accountValid(messageTarget)) {
+      $("userMessageError").textContent = "Enter a message for a valid account.";
+      return;
+    }
+    messageBusy = announcementBusy = true;
+    $("userMessageSend").disabled = $("userMessageCancel").disabled = true;
+    $("userMessageError").textContent = "";
+    const payload = {...messageTarget, message};
+    try {
+      const mode = await ensureAnnouncementMode(true);
+      atlasGuard();
+      if (mode.mode === "atlas") {
+        await submitAtlasMutation("publish", {request: payload}, "users");
+        if (atlasPending) $("userMessage").textContent += " Check its status on Announcements.";
+      } else {
+        if (announcementCreateUncertain) throw Error("Review the refreshed list on Announcements before sending again.");
+        persistAnnouncementUncertainty(true);
+        try {
+          await post(announcementBase, payload, undefined, true);
+          persistAnnouncementUncertainty(false);
+        } catch (error) {
+          announcementCreateUncertain = true;
+          await loadAnnouncements("", true);
+          throw Error(`${error.message} Review the list on Announcements before retrying.`);
+        }
+        $("userMessage").textContent = "Message sent.";
+      }
+      $("userMessageDialog").close();
+      $("userMessageForm").reset();
+      messageTarget = null;
+    } catch (error) {
+      $("userMessageError").textContent = error.message;
+    } finally {
+      messageBusy = announcementBusy = false;
+      $("userMessageSend").disabled = $("userMessageCancel").disabled = false;
+    }
+  };
+
   function renderUsers() {
     $("userRows").replaceChildren();
     for (const user of users) {
@@ -1233,6 +1331,7 @@
         actionButton("End all sessions", "all", user, null, !sessions.length),
         actionButton("Role", "role", user),
         actionButton("Password", "password", user),
+        messageButton(user, null, !sessions.some((session) => new Date(session.expiresAt) > new Date())),
       );
       actions.append(group);
       tr.append(actions);
@@ -1267,6 +1366,7 @@
             session.sessionId,
             !session.sessionId,
           ),
+          messageButton(user, session, !session.sessionTargetId || !(date > new Date())),
         );
         td.append(div);
       }

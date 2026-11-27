@@ -183,6 +183,8 @@ func TestAnnouncementAtlasSafeStatus(t *testing.T) {
 		expected string
 	}{
 		{"detail", bson.M{"_id": atlasTestID, "message": "notice", "createdAt": date, "password": "secret"}, `"id":"` + atlasTestID + `"`},
+		{"delete", bson.M{"_id": atlasTestID}, `"id":"` + atlasTestID + `"`},
+		{"history", bson.M{"announcements": bson.A{bson.M{"_id": atlasTestID, "cleared": true}}, "nextCursor": ""}, `"id":"` + atlasTestID + `"`},
 		{"list", bson.M{"announcements": bson.A{bson.M{"_id": atlasTestID, "startsAt": date, "token": "secret"}}, "nextCursor": ""}, `"startsAt":"2026-11-27T12:00:00Z"`},
 		{"sessions", bson.M{"sessions": bson.A{bson.M{"sessionTargetId": "selector", "createdAt": date, "expiresAt": date, "sessionId": "secret"}}, "nextCursor": ""}, `"expiresAt":"2026-11-27T12:00:00Z"`},
 		{"accounts", bson.M{"accounts": bson.A{bson.M{"tenantId": "tenant-a", "userId": "abc", "username": "user", "password": "secret"}}, "nextCursor": ""}, `"tenantId":"tenant-a"`},
