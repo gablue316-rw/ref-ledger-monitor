@@ -627,10 +627,11 @@
         border: 1px solid #ced8e2; border-radius: 6px; padding: 9px 11px;
         resize: vertical;
       }
-      #announcements .announcement-card {
-        border-top: 1px solid var(--line); padding: 14px 0;
-        overflow-wrap: anywhere;
-      }
+      #announcements .announcement-list-panel { grid-column: 1 / -1; }
+      #announcements table { min-width: 700px; }
+      #announcements table input[type="checkbox"] { width: auto; }
+      #announcements td { overflow-wrap: anywhere; vertical-align: top; }
+      #announcements .toolbar button { flex-shrink: 0; }
       #announcements .announcement-message { white-space: pre-wrap; color: var(--ink); }
       #announcements .toolbar { margin: 12px 0; }
       @media (max-width: 850px) {
@@ -683,13 +684,36 @@
       ></div>
       <section class="page" id="announcements" hidden>
         <div class="announcement-layout">
-          <div class="panel">
+          <div class="panel announcement-list-panel">
             <div class="panelhead">
-              <div><h2 id="announcementListTitle">Active &amp; scheduled</h2><label id="announcementHistoryControl" hidden><input type="checkbox" id="announcementHistory"> Show cleared and expired announcements</label></div>
+              <h2>Announcements</h2>
               <button class="btn" type="button" id="announcementRefresh">Refresh</button>
             </div>
+            <div class="toolbar">
+              <label>Banner type
+                <select id="announcementType">
+                  <option value="all">All</option>
+                  <option value="active">Active</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="cleared">Cleared</option>
+                  <option value="expired">Expired</option>
+                </select>
+              </label>
+              <button class="btn" type="button" id="announcementSearchType">Search</button>
+              <button class="btn" type="button" id="announcementBulkClear" disabled>Clear Selected Banner</button>
+            </div>
             <p id="announcementListStatus" role="status" aria-live="polite"></p>
-            <div id="announcementList"></div>
+            <div style="overflow-x:auto" role="region" aria-label="Announcement results" tabindex="0">
+              <table aria-label="Banners">
+                <thead><tr><th scope="col">Select</th><th scope="col">Message</th><th scope="col">Status</th><th scope="col">Audience</th><th scope="col">Schedule</th><th scope="col">Actions</th></tr></thead>
+                <tbody id="announcementList"></tbody>
+              </table>
+            </div>
+            <div class="toolbar">
+              <button class="btn" type="button" id="announcementPagePrevious" disabled>Previous</button>
+              <span id="announcementPageStatus"></span>
+              <button class="btn" type="button" id="announcementPageNext" disabled>Next</button>
+            </div>
           </div>
           <div class="panel">
             <h2 id="announcementFormTitle">Create announcement</h2>

@@ -88,14 +88,16 @@ type atlasAnnouncementRequest struct {
 }
 
 type AtlasAnnouncementInput struct {
-	RequestID      string                    `json:"requestId" bson:"requestId"`
-	Type           string                    `json:"type" bson:"type"`
-	After          string                    `json:"after,omitempty" bson:"after,omitempty"`
-	AnnouncementID string                    `json:"announcementId,omitempty" bson:"announcementId,omitempty"`
-	Username       string                    `json:"username,omitempty" bson:"username,omitempty"`
-	TenantID       string                    `json:"tenantId,omitempty" bson:"tenantId,omitempty"`
-	UserID         string                    `json:"userId,omitempty" bson:"userId,omitempty"`
-	Request        *atlasAnnouncementRequest `json:"request,omitempty" bson:"request,omitempty"`
+	Status          string                    `json:"status,omitempty" bson:"status,omitempty"`
+	AnnouncementIDs []string                  `json:"announcementIds,omitempty" bson:"announcementIds,omitempty"`
+	RequestID       string                    `json:"requestId" bson:"requestId"`
+	Type            string                    `json:"type" bson:"type"`
+	After           string                    `json:"after,omitempty" bson:"after,omitempty"`
+	AnnouncementID  string                    `json:"announcementId,omitempty" bson:"announcementId,omitempty"`
+	Username        string                    `json:"username,omitempty" bson:"username,omitempty"`
+	TenantID        string                    `json:"tenantId,omitempty" bson:"tenantId,omitempty"`
+	UserID          string                    `json:"userId,omitempty" bson:"userId,omitempty"`
+	Request         *atlasAnnouncementRequest `json:"request,omitempty" bson:"request,omitempty"`
 }
 
 type atlasAnnouncementCommand struct {
@@ -165,9 +167,20 @@ func validAtlasInput(in AtlasAnnouncementInput) bool {
 		return s != "" && len(s) <= 256 && strings.TrimSpace(s) == s && !strings.ContainsAny(s, "\x00\r\n")
 	}
 	switch in.Type {
-	case "list", "history":
+	case "list", "history", "search":
 		if in.After != "" && !logsCommandID.MatchString(in.After) {
 			return false
+		}
+	case "bulk-clear":
+		if len(in.AnnouncementIDs) == 0 || len(in.AnnouncementIDs) > 100 {
+			return false
+		}
+		seen := make(map[string]bool, len(in.AnnouncementIDs))
+		for _, id := range in.AnnouncementIDs {
+			if !logsCommandID.MatchString(id) || seen[id] {
+				return false
+			}
+			seen[id] = true
 		}
 	case "detail", "clear", "edit", "delete":
 		if !logsCommandID.MatchString(in.AnnouncementID) {
@@ -185,11 +198,23 @@ func validAtlasInput(in AtlasAnnouncementInput) bool {
 	default:
 		return false
 	}
-	if in.Type != "list" && in.Type != "history" && in.Type != "accounts" && in.Type != "sessions" && in.After != "" ||
+	if in.Type != "list" && in.Type != "history" && in.Type != "search" && in.Type != "accounts" && in.Type != "sessions" && in.After != "" ||
 		in.Type != "detail" && in.Type != "clear" && in.Type != "edit" && in.Type != "delete" && in.AnnouncementID != "" ||
 		in.Type != "accounts" && in.Username != "" ||
 		in.Type != "sessions" && (in.TenantID != "" || in.UserID != "") ||
 		(in.Type == "publish" || in.Type == "edit") != (in.Request != nil) {
+		return false
+	}
+	if in.Type == "search" {
+		switch in.Status {
+		case "all", "active", "scheduled", "cleared", "expired":
+		default:
+			return false
+		}
+	} else if in.Status != "" {
+		return false
+	}
+	if in.Type != "bulk-clear" && len(in.AnnouncementIDs) != 0 {
 		return false
 	}
 	if in.Request == nil {
@@ -351,6 +376,10 @@ func validAtlasFields(data []byte, kind string) bool {
 	switch kind {
 	case "list", "history":
 		allowed["after"] = true
+	case "search":
+		allowed["after"], allowed["status"] = true, true
+	case "bulk-clear":
+		allowed["announcementIds"] = true
 	case "accounts":
 		allowed["after"], allowed["username"] = true, true
 	case "sessions":
@@ -421,7 +450,7 @@ func safeAnnouncementResult(kind string, raw bson.Raw) (any, error) {
 	if len(raw) == 0 || bson.Unmarshal(raw, &doc) != nil {
 		return nil, errors.New("invalid result")
 	}
-	announcementFields := []string{"id", "message", "audience", "tenantId", "userId", "username", "sessionTargetId", "startsAt", "endsAt", "timezone", "cleared", "clearedAt", "createdBy", "createdAt", "updatedAt", "version"}
+	announcementFields := []string{"id", "message", "audience", "tenantId", "userId", "username", "sessionTargetId", "startsAt", "endsAt", "timezone", "cleared", "clearedAt", "createdBy", "createdAt", "updatedAt", "version", "status"}
 	clean := func(value any, fields []string, announcement bool) (map[string]any, error) {
 		m, ok := value.(bson.M)
 		if !ok {
@@ -454,7 +483,27 @@ func safeAnnouncementResult(kind string, raw bson.Raw) (any, error) {
 	switch kind {
 	case "detail", "publish", "edit", "clear", "delete":
 		return clean(doc, announcementFields, true)
-	case "list", "history", "accounts", "sessions":
+	case "bulk-clear":
+		items, ok := doc["results"].(primitive.A)
+		if !ok || len(items) == 0 || len(items) > 100 {
+			return nil, errors.New("invalid bulk clear results")
+		}
+		results := make([]map[string]any, 0, len(items))
+		seen := make(map[string]bool, len(items))
+		for _, item := range items {
+			row, err := clean(item, []string{"id", "outcome"}, false)
+			if err != nil {
+				return nil, err
+			}
+			id, ok := row["id"].(string)
+			if !ok || !logsCommandID.MatchString(id) || seen[id] || (row["outcome"] != "cleared" && row["outcome"] != "skipped") {
+				return nil, errors.New("invalid bulk clear outcome")
+			}
+			seen[id] = true
+			results = append(results, row)
+		}
+		return map[string]any{"results": results}, nil
+	case "list", "history", "search", "accounts", "sessions":
 		key, fields := "announcements", announcementFields
 		if kind == "accounts" {
 			key, fields = "accounts", []string{"tenantId", "userId", "username"}
@@ -472,7 +521,7 @@ func safeAnnouncementResult(kind string, raw bson.Raw) (any, error) {
 		}
 		result := make([]map[string]any, 0, len(items))
 		for _, item := range items {
-			safe, err := clean(item, fields, kind == "list" || kind == "history")
+			safe, err := clean(item, fields, kind == "list" || kind == "history" || kind == "search")
 			if err != nil {
 				return nil, err
 			}
