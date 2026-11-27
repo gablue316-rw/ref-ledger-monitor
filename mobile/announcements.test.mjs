@@ -2,11 +2,12 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import vm from "node:vm";
+import { randomUUID } from "node:crypto";
 
 const source = await readFile(new URL("../web/admin.js", import.meta.url), "utf8");
 const code = source.slice(source.indexOf('  const announcementBase ='), source.indexOf('  let logsOffset ='));
 
-function fixture(handler, stored = {}) {
+function fixture(handler, stored = {}, mode = {mode: "http"}, persistent = {}) {
   const nodes = new Map(), calls = [], events = {}, windowEvents = {}, intervals = [];
   class Node {
     constructor(tag = "div") {
@@ -28,7 +29,10 @@ function fixture(handler, stored = {}) {
   const context = {
     $: get,
     el: (tag, text, cls) => Object.assign(new Node(tag), {textContent: text, className: cls}),
-    request: async (path, options = {}) => { calls.push({path, options}); return handler(path, options); },
+    request: async (path, options = {}) => {
+      if (path === "api/admin/announcements/atlas") return mode;
+      calls.push({path, options}); return handler(path, options);
+    },
     post: async (path, payload) => { calls.push({path, payload}); return handler(path, {method: "POST", payload}); },
     document: {hidden: false, addEventListener: (name, fn) => { events[name] = fn; }},
     window: {addEventListener: (name, fn) => { windowEvents[name] = fn; }},
@@ -38,6 +42,14 @@ function fixture(handler, stored = {}) {
       setItem: (key, value) => { stored[key] = value; },
       removeItem: (key) => { delete stored[key]; },
     },
+    localStorage: {
+      getItem: (key) => persistent[key] || null,
+      setItem: (key, value) => { persistent[key] = value; },
+      removeItem: (key) => { delete persistent[key]; },
+    },
+    crypto: {randomUUID},
+    navigator: {locks: {request: async (_name, fn) => fn()}},
+    setTimeout,
     setInterval: (fn, delay) => intervals.push({fn, delay}),
     confirm: () => true,
   };
@@ -125,7 +137,8 @@ test("several announcements render as text and session lookup errors remain unkn
   assert.match(cards[0].children[5].textContent, /status unknown/);
   f.events.visibilitychange();
   f.windowEvents["monitor-app-resume"]();
-  assert.equal(f.calls.filter((c) => c.path === "api/admin/announcements").length, 3);
+  await new Promise(setImmediate);
+  assert.equal(f.calls.filter((c) => c.path === "api/admin/announcements").length, 2);
 });
 
 test("user audience uses stable account identity and schedule validation catches invalid dates", async () => {
@@ -202,8 +215,10 @@ test("periodic refresh only while visible, and in-flight stale reads cannot over
   assert.equal(f.calls.length, 0);
   f.context.document.hidden = false;
   const old = f.api.loadAnnouncements();
+  await new Promise(setImmediate);
   f.get("announcementMessage").value = "New";
   const save = f.get("announcementForm").onsubmit({preventDefault() {}});
+  await new Promise(setImmediate);
   f.intervals[0].fn();
   f.events.visibilitychange();
   f.windowEvents["monitor-app-resume"]();
@@ -214,5 +229,187 @@ test("periodic refresh only while visible, and in-flight stale reads cannot over
   await old;
   assert.equal(f.get("announcementList").children[0].children[1].textContent, "New");
   f.intervals[0].fn();
+  await new Promise(setImmediate);
   assert.equal(f.calls.length, 4);
+});
+
+const atlasMode = {mode: "atlas", actor: "monitor-actor", environment: "development"};
+const pendingKey = "announcementAtlasPendingV1";
+const commandPath = "api/admin/announcements/atlas/commands";
+
+test("Atlas paginates lists, accounts and sessions using new command IDs and stable identities", async () => {
+  const commands = new Map(), submitted = [];
+  const one = {...identity, sessionTargetId: "target-1", platform: "web"};
+  const two = {...identity, sessionTargetId: "target-2", platform: "mobile"};
+  const item = {id: "announcement-1", audience: "system", message: "first", version: 1};
+  const f = fixture(async (path, options) => {
+    if (path === commandPath) {
+      submitted.push(options.payload);
+      commands.set(options.payload.requestId, options.payload);
+      return {};
+    }
+    const command = commands.get(path.slice(commandPath.length + 1));
+    let result;
+    if (command.type === "list") result = command.after
+      ? {announcements: [{...item, id: "announcement-2"}], nextCursor: ""}
+      : {announcements: [item], nextCursor: "list-cursor"};
+    else if (command.type === "accounts") result = command.after
+      ? {accounts: [{...identity, tenantId: "tenant-b"}], nextCursor: ""}
+      : {accounts: [identity], nextCursor: "accounts-cursor"};
+    else if (command.type === "sessions") result = command.after
+      ? {sessions: [two], nextCursor: ""}
+      : {sessions: [one], nextCursor: "sessions-cursor"};
+    else if (command.type === "detail") result = item;
+    else throw Error("Unexpected command");
+    return {requestId: command.requestId, state: "completed", outcome: "success", result};
+  }, {}, atlasMode);
+  await f.api.loadAnnouncements();
+  assert.equal(f.get("announcementList").children.length, 2);
+  await f.get("announcementList").children[0].children[5].children[0].onclick();
+  assert.equal(f.get("announcementMessage").value, "first");
+  await selectAccount(f);
+  await f.api.loadAnnouncementSessions();
+  assert.equal(f.get("announcementSession").children.length, 3);
+  await f.get("announcementNext").onclick();
+  assert.match(f.get("announcementAccount").children[1].textContent, /tenant-b/);
+  assert.equal(new Set(submitted.map((c) => c.requestId)).size, submitted.length);
+  assert.equal(submitted.filter((c) => c.type === "sessions")[1].after, "sessions-cursor");
+  assert.equal(submitted.filter((c) => c.type === "sessions")[0].userId, identity.userId);
+  assert.equal(submitted.filter((c) => c.type === "accounts")[1].after, "accounts-cursor");
+});
+
+test("ambiguous Atlas publish survives reload, blocks rollback and retries original ID and payload on 404", async () => {
+  const persistent = {}, posts = [];
+  let online = false;
+  const handler = async (path, options) => {
+    if (path === commandPath) {
+      posts.push(JSON.parse(JSON.stringify(options.payload)));
+      if (!online) throw Error("connection lost");
+      return {};
+    }
+    if (!online) throw Error("offline");
+    if (path.startsWith(commandPath + "/")) {
+      if (posts.length === 1) throw Object.assign(Error("not found"), {status: 404});
+      return {requestId: posts[0].requestId, state: "processing"};
+    }
+    throw Error("unexpected");
+  };
+  const f = fixture(handler, {}, atlasMode, persistent);
+  f.get("announcementMessage").value = "private message";
+  await f.get("announcementForm").onsubmit({preventDefault() {}});
+  assert.match(f.get("announcementCommandStatus").textContent, /Unresolved/);
+  const saved = JSON.parse(persistent[pendingKey]);
+  assert.equal(saved.command.request.message, "private message");
+  assert.equal(posts.length, 1);
+  const rollback = fixture(handler, {}, {mode: "http"}, persistent);
+  rollback.get("announcementMessage").value = "other";
+  await rollback.get("announcementForm").onsubmit({preventDefault() {}});
+  await rollback.api.clearAnnouncement({id: "a"});
+  assert.equal(posts.length, 1);
+  assert.match(rollback.get("announcementFormStatus").textContent, /unresolved/i);
+  online = true;
+  const reload = fixture(handler, {}, atlasMode, persistent);
+  await reload.get("announcementCommandCheck").onclick();
+  assert.deepEqual(posts[1], posts[0]);
+  assert.match(reload.get("announcementCommandStatus").textContent, /Pending/);
+  assert.ok(persistent[pendingKey]);
+});
+
+test("Atlas distinguishes terminal outcomes and preserves unresolved commands on bad status", async () => {
+  for (const [outcome, label] of [["rejected", "Rejected"], ["failed", "Failed"]]) {
+    const pending = {actor: atlasMode.actor, environment: atlasMode.environment,
+      command: {requestId: randomUUID(), type: "clear", announcementId: "one"}};
+    const persistent = {[pendingKey]: JSON.stringify(pending)};
+    const f = fixture(async () => ({requestId: pending.command.requestId, state: "completed", outcome, reason: "conflict"}), {}, atlasMode, persistent);
+    await f.get("announcementCommandCheck").onclick();
+    assert.match(f.get("announcementCommandStatus").textContent, new RegExp(label));
+    assert.equal(persistent[pendingKey], undefined);
+  }
+  const pending = {actor: atlasMode.actor, environment: atlasMode.environment,
+    command: {requestId: randomUUID(), type: "clear", announcementId: "one"}};
+  const persistent = {[pendingKey]: JSON.stringify(pending)};
+  const f = fixture(async () => ({requestId: pending.command.requestId, state: "completed", outcome: "unknown"}), {}, atlasMode, persistent);
+  await f.get("announcementCommandCheck").onclick();
+  assert.match(f.get("announcementCommandStatus").textContent, /Unresolved/);
+  assert.ok(persistent[pendingKey]);
+});
+
+test("Atlas fails closed when storage or exclusive lock is unavailable or identity changes", async () => {
+  const f = fixture(async () => { throw Error("must not submit"); }, {}, atlasMode);
+  f.context.localStorage.setItem = () => { throw Error("storage disabled"); };
+  f.get("announcementMessage").value = "hello";
+  await f.get("announcementForm").onsubmit({preventDefault() {}});
+  assert.equal(f.calls.length, 0);
+  assert.match(f.get("announcementFormStatus").textContent, /storage is unavailable/);
+  f.context.navigator.locks = null;
+  await f.get("announcementForm").onsubmit({preventDefault() {}});
+  assert.match(f.get("announcementFormStatus").textContent, /locking is unavailable/);
+  const pending = {actor: "other", environment: "production",
+    command: {requestId: randomUUID(), type: "clear", announcementId: "one"}};
+  const g = fixture(async () => { throw Error("must not submit"); }, {}, atlasMode, {[pendingKey]: JSON.stringify(pending)});
+  await g.get("announcementCommandRetry").onclick();
+  assert.equal(g.calls.length, 0);
+  assert.match(g.get("announcementCommandStatus").textContent, /operator or environment differs/);
+});
+
+test("Atlas mutations are only confirmed after completed success and edits include version", async () => {
+  const commands = new Map(), writes = [], persistent = {};
+  let state = "pending";
+  const f = fixture(async (path, options) => {
+    if (path === commandPath) {
+      const command = options.payload;
+      commands.set(command.requestId, command);
+      if (["publish", "edit", "clear"].includes(command.type)) writes.push(command);
+      return {};
+    }
+    const command = commands.get(path.slice(commandPath.length + 1));
+    return command.type === "list"
+      ? {requestId: command.requestId, state: "completed", outcome: "success", result: {announcements: [], nextCursor: ""}}
+      : {requestId: command.requestId, state, outcome: state === "completed" ? "success" : "", result: {}};
+  }, {}, atlasMode, persistent);
+  f.get("announcementMessage").value = "hello";
+  await f.get("announcementForm").onsubmit({preventDefault() {}});
+  assert.match(f.get("announcementCommandStatus").textContent, /Pending/);
+  assert.ok(persistent[pendingKey]);
+  assert.equal(f.get("announcementMessage").value, "hello");
+  state = "completed";
+  await f.get("announcementCommandCheck").onclick();
+  assert.match(f.get("announcementCommandStatus").textContent, /Confirmed/);
+  assert.equal(persistent[pendingKey], undefined);
+  assert.equal(f.get("announcementMessage").value, "");
+  f.api.editAnnouncement({id: "one", audience: "system", message: "old", version: 7});
+  f.get("announcementMessage").value = "updated";
+  await f.get("announcementForm").onsubmit({preventDefault() {}});
+  assert.equal(writes[1].type, "edit");
+  assert.equal(writes[1].announcementId, "one");
+  assert.equal(writes[1].request.version, 7);
+  await f.api.clearAnnouncement({id: "one"});
+  assert.equal(writes[2].type, "clear");
+  assert.equal(writes[2].announcementId, "one");
+});
+
+test("a stale tab cannot clear or resubmit a different persisted command", async () => {
+  const pending = {actor: atlasMode.actor, environment: atlasMode.environment,
+    command: {requestId: randomUUID(), type: "clear", announcementId: "one"}};
+  const persistent = {[pendingKey]: JSON.stringify(pending)};
+  const f = fixture(async () => { throw Error("must not submit"); }, {}, atlasMode, persistent);
+  const replacement = {...pending, command: {...pending.command, requestId: randomUUID()}};
+  persistent[pendingKey] = JSON.stringify(replacement);
+  await f.get("announcementCommandRetry").onclick();
+  assert.equal(f.calls.length, 0);
+  assert.equal(persistent[pendingKey], JSON.stringify(replacement));
+  assert.match(f.get("announcementCommandStatus").textContent, /changed in another tab/);
+});
+
+test("HTTP 202 is not treated as a confirmed mutation", async () => {
+  const requestCode = source.slice(source.indexOf("  async function request("), source.indexOf("  const names ="));
+  const context = {
+    fetch: async () => ({status: 202, ok: true, text: async () => "{}"}),
+    adminURL: (path) => path,
+    AbortSignal: {timeout: () => ({})},
+  };
+  vm.runInNewContext(requestCode + "\nglobalThis.request = request; globalThis.post = post;", context);
+  await assert.rejects(context.request("api/admin/announcements", {method: "POST", rejectAccepted: true}), /not confirmed/);
+  await assert.rejects(context.post("api/admin/announcements/id/clear", {}, undefined, true), /not confirmed/);
+  await context.post(commandPath, {});
 });

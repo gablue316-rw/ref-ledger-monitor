@@ -17,6 +17,58 @@ it is not an authorization boundary.
 
 ## Announcement backend deployment
 
+Atlas announcement management uses the
+[version 1 command contract](https://github.com/gablue316-rw/ref-ledger-v2.0/blob/190b97a6037a205fed42faf207ee750769f3485f/docs/announcement-atlas-v1.md).
+Ref Ledger remains authoritative for validation, scheduling, and delivery.
+The Android app uses the same server-side integration and administrator
+authorization as the Monitor website; no Atlas credentials go into the app.
+
+Set Monitor's `ANNOUNCEMENTS_COMMAND_MODE=atlas`,
+`ANNOUNCEMENTS_COMMAND_URI` to the dedicated Atlas connection string, and
+`ANNOUNCEMENTS_COMMAND_DATABASE` to the Ref Ledger database name. Monitor's
+`APP_ENV` must exactly match the Ref Ledger worker environment. The command
+URI requires Atlas TLS (a loopback MongoDB connection is permitted only in
+development). An unset mode or `ANNOUNCEMENTS_COMMAND_MODE=http` selects the
+existing HTTP integration. Invalid Atlas configuration prevents startup.
+The existing Monitor instance-wide administrator has access to the configured
+environment; use separate instances and credentials for isolated environments.
+
+Provision a dedicated Atlas principal with only `insert` and `find` on
+`refLedgerAnnouncementCommands` in the intended Ref Ledger database. Do not
+grant it direct access to announcement, account, or session collections, or
+update/delete access to commands. Protect command results and set a retention
+policy for completed commands; they contain announcement messages and account
+identifiers. Never TTL-delete pending or processing commands. Use TLS, private
+network access, synchronized clocks, and an environment-specific database and
+worker. The Ref Ledger worker requires a replica set or sharded deployment for
+transactions.
+
+Deploy both components with the worker disabled first. Set Ref Ledger's
+`REF_LEDGER_ANNOUNCEMENT_COMMANDS_ENABLED=true`, `APP_ENV` to the intended
+environment, and `REF_LEDGER_ANNOUNCEMENT_COMMAND_ACTORS` to the exact hashed
+Monitor administrator actor ID, `monitor-` followed by the lowercase SHA-256
+hex digest of the Monitor administrator username. Treat this allowlist as
+routing, not authentication: database permissions provide the security
+boundary. Start in nonproduction and verify list, account and web/Android
+session selection, immediate and scheduled publish, edit, clear, stale edits,
+and recovery after a worker restart. Confirm delivery and clearing in open
+Ref Ledger clients, including duplicate usernames and selected-session versus
+all-user-session targets. Coordinate live verification after both deployments.
+
+Roll back by returning Monitor to HTTP mode and disabling the Ref Ledger
+worker. In-flight work may still complete or recover when re-enabled; reconcile
+existing command IDs before issuing new commands. Do not treat submission or
+a timeout as confirmation, and investigate unresolved or failed results rather
+than issuing a fresh publish. Keep HTTP credentials configured for rollback if
+needed. Avoid logging command bodies, session selectors, or credentials.
+Unresolved commands, including their message, are stored in the browser on
+the device for same-ID recovery. Use a trusted device and protect its storage.
+Atlas writes require browser persistent storage and the Web Locks API; if
+either is unavailable, Monitor refuses to submit rather than risking duplicate
+commands. Use a current browser or Android System WebView.
+
+### HTTP mode
+
 Monitor proxies announcement management to the Ref Ledger contract pinned at
 [`d7782e0942d68ff2a15dc8b173d270201cf80ca9`](https://github.com/gablue316-rw/ref-ledger-v2.0/blob/d7782e0942d68ff2a15dc8b173d270201cf80ca9/docs/announcements-api.md).
 Ref Ledger owns announcement state, validation, scheduling, and delivery.
