@@ -612,6 +612,27 @@
       #dialogError {
         color: var(--red);
       }
+      #announcements .announcement-layout {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+        gap: 16px;
+        margin-top: 20px;
+      }
+      #announcements .panel { padding: 20px; min-width: 0; }
+      #announcements label { margin-top: 12px; }
+      #announcements input, #announcements select, #announcements textarea {
+        width: 100%; max-width: 100%; font: inherit;
+      }
+      #announcements textarea {
+        border: 1px solid #ced8e2; border-radius: 6px; padding: 9px 11px;
+        resize: vertical;
+      }
+      #announcements .announcement-card {
+        border-top: 1px solid var(--line); padding: 14px 0;
+        overflow-wrap: anywhere;
+      }
+      #announcements .announcement-message { white-space: pre-wrap; color: var(--ink); }
+      #announcements .toolbar { margin: 12px 0; }
       @media (max-width: 850px) {
         #rl-monitor .collection-grid {
           grid-template-columns: 1fr;
@@ -628,6 +649,7 @@
           <b>◉</b>Metrics</button
         ><button data-page="users"><b>♙</b>Users & sessions</button
         ><button data-page="catalog"><b>▦</b>Sports & roles</button>
+        <button data-page="announcements"><b>◫</b>Announcements</button>
         <button data-page="logs"><b>≡</b>Ref Ledger logs</button>
         <button data-page="maintenance"><b>⚙</b>Maintenance</button>
       </nav>
@@ -659,6 +681,71 @@
         role="status"
         aria-live="polite"
       ></div>
+      <section class="page" id="announcements" hidden>
+        <div class="announcement-layout">
+          <div class="panel">
+            <div class="panelhead">
+              <div><h2>Active & scheduled</h2><p>Uncleared announcements that have not expired.</p></div>
+              <button class="btn" type="button" id="announcementRefresh">Refresh</button>
+            </div>
+            <p id="announcementListStatus" role="status" aria-live="polite"></p>
+            <div id="announcementList"></div>
+          </div>
+          <div class="panel">
+            <h2 id="announcementFormTitle">Create announcement</h2>
+            <form id="announcementForm">
+              <label>Message (plain text, up to 4000 characters)
+                <textarea id="announcementMessage" rows="5" required></textarea>
+              </label>
+              <label>Audience
+                <select id="announcementAudience">
+                  <option value="system">Everyone</option>
+                  <option value="user">Specific user</option>
+                  <option value="session">Specific session</option>
+                </select>
+              </label>
+              <div id="announcementTarget" hidden>
+                <p>Duplicate usernames across accounts can prevent upstream session resolution or delivery, even for a successfully published user announcement. Verify delivery separately.</p>
+                <label>Search users by username
+                  <input id="announcementSearch" type="search" maxlength="254" autocomplete="off" />
+                </label>
+                <div class="toolbar">
+                  <button class="btn" type="button" id="announcementSearchButton">Search accounts</button>
+                  <button class="btn" type="button" id="announcementPrevious">Previous</button>
+                  <button class="btn" type="button" id="announcementNext">Next</button>
+                </div>
+                <p id="announcementSearchStatus" role="status" aria-live="polite"></p>
+                <label>Account and user
+                  <select id="announcementAccount"><option value="">Select an account</option></select>
+                </label>
+                <div id="announcementSessionFields" hidden>
+                  <div class="toolbar"><button class="btn" type="button" id="announcementSessionsButton">Load active sessions</button></div>
+                  <p id="announcementSessionStatus" role="status" aria-live="polite"></p>
+                  <label>Session target
+                    <select id="announcementSession"><option value="">Select a session</option></select>
+                  </label>
+                </div>
+              </div>
+              <label>Start (optional)
+                <input id="announcementStart" type="text" placeholder="YYYY-MM-DD or YYYY-MM-DDTHH:MM" />
+              </label>
+              <label>End (optional; date-only includes the entire day)
+                <input id="announcementEnd" type="text" placeholder="YYYY-MM-DD or YYYY-MM-DDTHH:MM" />
+              </label>
+              <label>Timezone (IANA, required with dates)
+                <input id="announcementTimezone" type="text" placeholder="America/New_York" />
+              </label>
+              <p>Dates and local times use this timezone. RFC 3339 timestamps with an offset are also accepted.</p>
+              <p id="announcementFormStatus" role="status" aria-live="polite"></p>
+              <button class="btn" id="announcementAcknowledge" type="button" hidden disabled>I reviewed the refreshed list</button>
+              <div class="toolbar">
+                <button class="btn primary" id="announcementSave" type="submit">Publish</button>
+                <button class="btn" id="announcementCancel" type="button">Reset</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
       <section class="page" id="maintenance" hidden>
         <div class="panel" style="padding:24px">
           <h2>Maintenance mode</h2>
