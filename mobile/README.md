@@ -15,6 +15,62 @@ scope, confirmation, command and audit checks.
 The dashboard tenant selector filters metrics already returned to the browser;
 it is not an authorization boundary.
 
+## Announcement backend deployment
+
+Monitor proxies announcement management to the Ref Ledger contract pinned at
+[`d7782e0942d68ff2a15dc8b173d270201cf80ca9`](https://github.com/gablue316-rw/ref-ledger-v2.0/blob/d7782e0942d68ff2a15dc8b173d270201cf80ca9/docs/announcements-api.md).
+Ref Ledger owns announcement state, validation, scheduling, and delivery.
+
+Set both `ANNOUNCEMENTS_ADMIN_URL` to the Ref Ledger origin (no path, query,
+fragment, or userinfo) and `ANNOUNCEMENTS_ADMIN_TOKEN` to the same secret as
+Ref Ledger's `REF_LEDGER_LOG_API_TOKEN`. The token must contain at least 32
+printable non-space ASCII characters and is server-only. Configure neither to
+disable the proxy; incomplete or invalid configuration prevents startup.
+HTTPS is required, except HTTP to localhost or a loopback IP in
+`APP_ENV=development`. The upstream must not redirect. Monitor sends a hashed
+administrator identity for auditing, not customer credentials.
+
+Authenticated Monitor endpoints, also available under `/admin`, are:
+
+* `GET /api/admin/announcements` and `POST /api/admin/announcements`
+* `PUT /api/admin/announcements/{id}`
+* `POST /api/admin/announcements/{id}/clear` with JSON body `{}`
+* `GET /api/admin/announcements/sessions?username=...`
+* `GET /api/admin/announcements/users?username=...&name=...&offset=...`
+
+The users search is paginated in pages of 50 and returns `users` with only
+`id`, `username`, `name`, and `tenantId`, plus `hasMore`, `offset`, and
+`pageSize`. Use the selected user's stable `id` as `userId` and `tenantId`
+for user targeting; usernames alone are not unique. Do not use the unrelated
+`/api/admin/users` session IDs for announcements. For session targeting, use
+only `sessionTargetId` from the announcement sessions endpoint, not a session
+cookie, token, or `sessionId`.
+
+The upstream sessions endpoint resolves **only username**, not a selected
+account. The caller must compare the response's `tenantId` and `userId` and
+each session's identity against the selected account before presenting or
+submitting a target, and fail closed on any mismatch. Monitor checks that each
+returned session matches the upstream response identity, but cannot select the
+intended account from the username alone.
+
+In the pinned Ref Ledger implementation, `mongoAnnouncementDirectory.userID`
+performs `FindOne` using username alone and then checks tenant. With duplicate
+usernames, session resolution and customer delivery for one account can fail
+even when publishing a user-targeted announcement succeeds. Monitor cannot
+repair that upstream ambiguity; do not infer successful delivery from publish.
+
+Writes require `Content-Type: application/json`, `X-Ref-Ledger-Admin: 1`,
+and the existing Monitor origin and CSRF protections. Monitor preserves
+upstream 400, 404, 409, and 422 statuses with safe, status-specific `message`
+responses. Other upstream errors, invalid or oversized responses, redirects,
+and timeouts return 502 without upstream details; disabled integration returns
+503. A failed or timed-out write may have succeeded upstream: refresh the
+announcement list before retrying. Monitor never forwards browser authorization
+or cookies, and never forwards upstream response headers or raw error bodies.
+The pinned upstream list is not paginated; Monitor bounds its response to 16 MiB
+and other announcement responses to 1 MiB. Lists exceeding the bound cannot be
+managed through Monitor until the upstream result shrinks or supports pagination.
+
 ## Requirements
 
 * Windows 10/11, Git, Node.js 20 or 22 LTS and npm.

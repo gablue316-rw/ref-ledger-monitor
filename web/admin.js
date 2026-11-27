@@ -71,6 +71,10 @@
       "Ref Ledger logs",
       "Search, export, and manage Ref Ledger structured logs.",
     ],
+    announcements: [
+      "Announcements",
+      "Publish and manage notices for everyone, a user, or one session.",
+    ],
   };
   let userStarted = false,
     sportsStarted = false,
@@ -89,6 +93,7 @@
     $("title").textContent = names[page][0];
     $("subtitle").textContent = names[page][1];
     if (page === "maintenance") loadMaintenance();
+    if (page === "announcements") loadAnnouncements();
     if (page === "users" && !userStarted) {
       userStarted = true;
       loadUsers();
@@ -110,6 +115,376 @@
     .querySelectorAll("[data-page]")
     .forEach((b) => (b.onclick = () => (location.hash = b.dataset.page)));
   window.addEventListener("hashchange", navigate);
+  const announcementBase = "api/admin/announcements";
+  let announcementLoad = 0, announcementBusy = false, announcementEdit = null;
+  let announcementCreateUncertain = false;
+  try { announcementCreateUncertain = sessionStorage.getItem("announcementCreateUncertain") === "1"; }
+  catch { /* The in-memory guard still applies if storage is unavailable. */ }
+  function persistAnnouncementUncertainty(value) {
+    try {
+      if (value) sessionStorage.setItem("announcementCreateUncertain", "1");
+      else sessionStorage.removeItem("announcementCreateUncertain");
+    } catch { /* The in-memory guard still applies if storage is unavailable. */ }
+  }
+  let announcementAccounts = [], announcementAccount = null, announcementSessions = [];
+  let announcementSearchOffset = 0, announcementSearchMore = false;
+  let announcementSearchQuery = "", announcementTargetGeneration = 0;
+
+  function accountValid(account) {
+    return account && typeof account.tenantId === "string" && account.tenantId &&
+      typeof account.userId === "string" && account.userId &&
+      typeof account.username === "string" && account.username;
+  }
+  function sameAccount(a, b) {
+    return accountValid(a) && accountValid(b) &&
+      a.tenantId === b.tenantId && a.userId === b.userId && a.username === b.username;
+  }
+  function announcementOption(value, text) {
+    const option = el("option", text);
+    option.value = value;
+    return option;
+  }
+  function clearAnnouncementSessions() {
+    announcementTargetGeneration++;
+    announcementSessions = [];
+    $("announcementSession").replaceChildren(announcementOption("", "Select a session"));
+    $("announcementSessionStatus").textContent = "";
+  }
+  function announcementAudienceChanged() {
+    const audience = $("announcementAudience").value;
+    $("announcementTarget").hidden = audience === "system";
+    $("announcementSessionFields").hidden = audience !== "session";
+    clearAnnouncementSessions();
+  }
+  function resetAnnouncement() {
+    announcementEdit = null;
+    $("announcementForm").reset();
+    $("announcementTimezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    $("announcementFormTitle").textContent = "Create announcement";
+    $("announcementSave").textContent = "Publish";
+    $("announcementFormStatus").textContent = "";
+    $("announcementSearchStatus").textContent = "";
+    announcementAccounts = [];
+    announcementAccount = null;
+    announcementSearchOffset = 0;
+    announcementSearchMore = false;
+    $("announcementAccount").replaceChildren(announcementOption("", "Select an account"));
+    announcementAudienceChanged();
+    announcementSearchButtons();
+  }
+  function announcementSearchButtons() {
+    $("announcementPrevious").disabled = announcementSearchOffset === 0;
+    $("announcementNext").disabled = !announcementSearchMore;
+  }
+  async function searchAnnouncementAccounts(offset) {
+    const generation = ++announcementTargetGeneration;
+    announcementAccount = null;
+    announcementSessions = [];
+    $("announcementAccount").replaceChildren(announcementOption("", "Select an account"));
+    $("announcementSession").replaceChildren(announcementOption("", "Select a session"));
+    $("announcementSessionStatus").textContent = "";
+    announcementSearchMore = false;
+    announcementSearchOffset = offset;
+    announcementSearchButtons();
+    $("announcementSearchStatus").textContent = "Searching accounts…";
+    try {
+      const data = await request(`${announcementBase}/users?` + new URLSearchParams({
+        username: announcementSearchQuery, offset: String(offset),
+      }));
+      if (generation !== announcementTargetGeneration) return;
+      if (!Array.isArray(data.users)) throw Error("Invalid user directory response.");
+      announcementAccounts = data.users.map((u) => ({
+        tenantId: u.tenantId, userId: u.id, username: u.username, name: u.name,
+      })).filter(accountValid);
+      for (const [index, account] of announcementAccounts.entries()) {
+        $("announcementAccount").append(announcementOption(String(index),
+          `${account.username} · ${account.name || "Unnamed"} · tenant ${account.tenantId} · user ${account.userId}`));
+      }
+      announcementSearchMore = data.hasMore === true;
+      $("announcementSearchStatus").textContent = announcementAccounts.length
+        ? `Select an account. Results ${offset + 1}–${offset + announcementAccounts.length}${announcementSearchMore ? " · more available" : ""}.`
+        : "No usable accounts found. Try another search.";
+    } catch (error) {
+      if (generation !== announcementTargetGeneration) return;
+      $("announcementSearchStatus").textContent = `Account search failed: ${error.message}`;
+    } finally {
+      if (generation === announcementTargetGeneration) announcementSearchButtons();
+    }
+  }
+  async function verifiedAnnouncementSessions(account) {
+    if (!accountValid(account)) throw Error("Select an account first.");
+    let data;
+    try {
+      data = await request(`${announcementBase}/sessions?` + new URLSearchParams({username: account.username}));
+    } catch (error) {
+      throw Error(`${error.message} Check the selected account and resolve any duplicate usernames upstream before retrying.`);
+    }
+    if (!sameAccount(account, data) || !Array.isArray(data.sessions) ||
+        !data.sessions.every((session) => sameAccount(account, session) &&
+          typeof session.sessionTargetId === "string" && session.sessionTargetId)) {
+      throw Error("The username resolved to a different or ambiguous account, or session identities were incomplete. Select the correct account or resolve duplicate usernames upstream before retrying.");
+    }
+    return data.sessions;
+  }
+  async function loadAnnouncementSessions(preselect = "") {
+    const account = announcementAccount;
+    clearAnnouncementSessions();
+    const generation = announcementTargetGeneration;
+    $("announcementSessionStatus").textContent = "Loading active sessions…";
+    try {
+      const sessions = await verifiedAnnouncementSessions(account);
+      if (generation !== announcementTargetGeneration) return;
+      announcementSessions = sessions;
+      for (const [index, session] of sessions.entries()) {
+        $("announcementSession").append(announcementOption(String(index),
+          `${session.platform || "Unknown platform"} · target ${session.sessionTargetId} · signed in ${session.createdAt || "unknown"} · expires ${session.expiresAt || "unknown"}`));
+      }
+      const selected = sessions.findIndex((session) => session.sessionTargetId === preselect);
+      if (selected >= 0) $("announcementSession").value = String(selected);
+      $("announcementSessionStatus").textContent = sessions.length
+        ? "Active sessions loaded. Select a session target."
+        : "No active sessions found for this account.";
+    } catch (error) {
+      if (generation !== announcementTargetGeneration) return;
+      $("announcementSessionStatus").textContent = `Session status unknown: ${error.message}`;
+    }
+  }
+  async function loadAnnouncements(message = "", afterWrite = false) {
+    if (announcementBusy && !afterWrite) return;
+    const generation = ++announcementLoad;
+    if (announcementCreateUncertain) $("announcementAcknowledge").disabled = true;
+    $("announcementListStatus").textContent = message || "Loading announcements…";
+    try {
+      const data = await request(announcementBase);
+      if (generation !== announcementLoad) return;
+      if (!Array.isArray(data.announcements)) throw Error("Invalid announcement list response.");
+      $("announcementList").replaceChildren();
+      for (const item of data.announcements) renderAnnouncement(item);
+      $("announcementListStatus").textContent = (message ||
+        (data.announcements.length ? `${data.announcements.length} announcement(s) loaded.` : "No active or scheduled announcements.")) +
+        (announcementCreateUncertain ? " Review the refreshed list and acknowledge it before publishing again." : "");
+      if (announcementCreateUncertain) $("announcementAcknowledge").disabled = false;
+    } catch (error) {
+      if (generation !== announcementLoad) return;
+      $("announcementList").replaceChildren();
+      $("announcementListStatus").textContent = `${message ? message + " " : ""}Unable to refresh announcements: ${error.message}`;
+    }
+  }
+  function renderAnnouncement(item) {
+    const card = el("article", "", "announcement-card");
+    const scheduled = item.startsAt && Date.parse(item.startsAt) > Date.now();
+    card.append(el("strong", scheduled ? "Scheduled" : "Active"),
+      el("p", item.message || "", "announcement-message"),
+      el("p", `Audience: ${item.audience || "unknown"}`),
+      el("p", item.audience === "system" ? "Target: everyone" :
+        `Target: ${item.username || "unknown"} · tenant ${item.tenantId || "unknown"} · user ${item.userId || "unknown"}${item.audience === "session" ? ` · session target ${item.sessionTargetId || "unknown"}` : ""}`),
+      el("p", `Start: ${item.startsAt || "now"} · End: ${item.endsAt || "no expiration"} · Timezone: ${item.timezone || "not specified"}`));
+    if (item.audience === "session") {
+      const status = el("p", "Session status: not checked.");
+      const check = el("button", "Check session status", "btn");
+      check.type = "button";
+      check.onclick = async () => {
+        check.disabled = true;
+        status.textContent = "Checking session status…";
+        try {
+          const sessions = await verifiedAnnouncementSessions(item);
+          status.textContent = sessions.some((s) => s.sessionTargetId === item.sessionTargetId)
+            ? "Session status: active at last check."
+            : "Session status: not in the active session list (may have ended or expired).";
+        } catch (error) {
+          status.textContent = `Session status unknown: ${error.message}`;
+        } finally { check.disabled = false; }
+      };
+      card.append(status, check);
+    }
+    const actions = el("div", "", "toolbar");
+    const edit = el("button", "Edit", "btn");
+    edit.type = "button";
+    edit.onclick = () => editAnnouncement(item);
+    const clear = el("button", "Clear Banner", "btn");
+    clear.type = "button";
+    clear.onclick = () => clearAnnouncement(item);
+    actions.append(edit, clear);
+    card.append(actions);
+    $("announcementList").append(card);
+  }
+  function editAnnouncement(item) {
+    if (announcementBusy) return;
+    resetAnnouncement();
+    announcementEdit = item;
+    $("announcementFormTitle").textContent = "Edit announcement";
+    $("announcementSave").textContent = "Save changes";
+    $("announcementMessage").value = item.message || "";
+    $("announcementAudience").value = item.audience;
+    $("announcementStart").value = item.startsAt || "";
+    $("announcementEnd").value = item.endsAt || "";
+    $("announcementTimezone").value = item.timezone || "UTC";
+    announcementAudienceChanged();
+    if (item.audience !== "system" && accountValid(item)) {
+      announcementAccount = {tenantId: item.tenantId, userId: item.userId, username: item.username};
+      announcementAccounts = [announcementAccount];
+      $("announcementAccount").append(announcementOption("0", `${item.username} · tenant ${item.tenantId} · user ${item.userId}`));
+      $("announcementAccount").value = "0";
+      if (item.audience === "session") loadAnnouncementSessions(item.sessionTargetId);
+    }
+    $("announcementFormStatus").textContent = "Editing version " + item.version + ". Times are shown exactly as returned by the server.";
+    $("announcementMessage").focus();
+  }
+  function validateAnnouncementSchedule(payload) {
+    if (payload.timezone) {
+      try { new Intl.DateTimeFormat("en", {timeZone: payload.timezone}); }
+      catch { throw Error("Enter a valid IANA timezone."); }
+    }
+    const parsed = {};
+    for (const key of ["startsAt", "endsAt"]) {
+      const value = payload[key];
+      if (!value) continue;
+      const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/.exec(value);
+      if (!match) throw Error(`Invalid ${key === "startsAt" ? "start" : "end"} date or time.`);
+      const [, year, month, day, hour, minute, second, offset] = match;
+      const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+      if (Number(year) < 100 || date.getUTCFullYear() !== Number(year) ||
+          date.getUTCMonth() !== Number(month) - 1 || date.getUTCDate() !== Number(day) ||
+          Number(hour || 0) > 23 || Number(minute || 0) > 59 || Number(second || 0) > 59 ||
+          (offset && (!second || Number.isNaN(Date.parse(value))))) {
+        throw Error(`Invalid ${key === "startsAt" ? "start" : "end"} date or time.`);
+      }
+      parsed[key] = {value, offset, dateOnly: !hour};
+    }
+    const start = parsed.startsAt, end = parsed.endsAt;
+    if (start && end) {
+      if (start.offset && end.offset && Date.parse(end.value) <= Date.parse(start.value))
+        throw Error("End must be after start.");
+      if (!start.offset && !end.offset && !end.dateOnly && end.value <= start.value)
+        throw Error("End must be after start.");
+      if (!start.offset && !end.offset && end.dateOnly && end.value < start.value.slice(0, 10))
+        throw Error("End must be after start.");
+    }
+  }
+  function announcementPayload() {
+    const message = $("announcementMessage").value;
+    if (!message.trim() || Array.from(message).length > 4000) throw Error("Enter a message of 1–4000 characters.");
+    const audience = $("announcementAudience").value;
+    const payload = {message, audience};
+    if (audience !== "system") {
+      if (!accountValid(announcementAccount)) throw Error("Search for and select an account.");
+      Object.assign(payload, {tenantId: announcementAccount.tenantId, userId: announcementAccount.userId, username: announcementAccount.username});
+      if (audience === "session") {
+        const index = $("announcementSession").value;
+        const session = index === "" ? null : announcementSessions[Number(index)];
+        if (!session || !sameAccount(announcementAccount, session)) throw Error("Load and select a verified active session.");
+        payload.sessionTargetId = session.sessionTargetId;
+      }
+    }
+    for (const [id, key] of [["announcementStart", "startsAt"], ["announcementEnd", "endsAt"]]) {
+      const value = $(id).value.trim();
+      if (value) payload[key] = value;
+    }
+    const timezone = $("announcementTimezone").value.trim();
+    if ((payload.startsAt || payload.endsAt) && !timezone) throw Error("Enter an IANA timezone when specifying dates.");
+    if (timezone) payload.timezone = timezone;
+    validateAnnouncementSchedule(payload);
+    if (announcementEdit) {
+      if (!Number.isInteger(announcementEdit.version)) throw Error("Version unavailable. Refresh and edit again.");
+      payload.version = announcementEdit.version;
+    }
+    return payload;
+  }
+  async function clearAnnouncement(item) {
+    if (announcementBusy || !confirm("Clear this announcement immediately?")) return;
+    announcementBusy = true;
+    ++announcementLoad;
+    if (announcementCreateUncertain) $("announcementAcknowledge").disabled = true;
+    try {
+      await post(`${announcementBase}/${encodeURIComponent(item.id)}/clear`, {});
+      if (announcementEdit && announcementEdit.id === item.id) resetAnnouncement();
+      await loadAnnouncements("Announcement cleared.", true);
+    } catch (error) {
+      if (announcementEdit && announcementEdit.id === item.id) {
+        $("announcementFormStatus").textContent = "Clear failed. Refresh and select Edit again before saving.";
+        announcementEdit = {...announcementEdit, version: null};
+      }
+      await loadAnnouncements(`Clear failed: ${error.message}.`, true);
+    } finally { announcementBusy = false; }
+  }
+  $("announcementForm").onsubmit = async (event) => {
+    event.preventDefault();
+    if (announcementBusy) return;
+    if (!announcementEdit && announcementCreateUncertain) {
+      $("announcementFormStatus").textContent = "Review a successfully refreshed list and acknowledge it before publishing again.";
+      return;
+    }
+    let payload;
+    try { payload = announcementPayload(); }
+    catch (error) { $("announcementFormStatus").textContent = error.message; return; }
+    announcementBusy = true;
+    ++announcementLoad;
+    if (announcementCreateUncertain) $("announcementAcknowledge").disabled = true;
+    $("announcementSave").disabled = true;
+    const creating = !announcementEdit;
+    if (creating) persistAnnouncementUncertainty(true);
+    try {
+      await request(announcementEdit ? `${announcementBase}/${encodeURIComponent(announcementEdit.id)}` : announcementBase, {
+        method: announcementEdit ? "PUT" : "POST",
+        headers: {"Content-Type": "application/json", "X-Ref-Ledger-Admin": "1"},
+        body: JSON.stringify(payload),
+      });
+      if (creating) persistAnnouncementUncertainty(false);
+      resetAnnouncement();
+      await loadAnnouncements("Announcement saved.", true);
+    } catch (error) {
+      if (announcementEdit) announcementEdit = {...announcementEdit, version: null};
+      else {
+        announcementCreateUncertain = true;
+        $("announcementAcknowledge").hidden = false;
+        $("announcementAcknowledge").disabled = true;
+      }
+      $("announcementFormStatus").textContent = `Save failed: ${error.message}. ${announcementEdit ? "Refresh and select Edit again before retrying." : "Check the list before retrying; the result may be uncertain."}`;
+      await loadAnnouncements("", true);
+    } finally {
+      announcementBusy = false;
+      $("announcementSave").disabled = false;
+    }
+  };
+  $("announcementCancel").onclick = resetAnnouncement;
+  $("announcementAcknowledge").onclick = () => {
+    if (announcementBusy || !announcementCreateUncertain || $("announcementAcknowledge").disabled) return;
+    announcementCreateUncertain = false;
+    persistAnnouncementUncertainty(false);
+    $("announcementAcknowledge").hidden = true;
+    $("announcementAcknowledge").disabled = true;
+    $("announcementFormStatus").textContent = "List reviewed. You may publish again.";
+  };
+  $("announcementRefresh").onclick = () => loadAnnouncements();
+  $("announcementAudience").onchange = announcementAudienceChanged;
+  $("announcementSearchButton").onclick = () => {
+    announcementSearchQuery = $("announcementSearch").value.trim();
+    if (!announcementSearchQuery) {
+      $("announcementSearchStatus").textContent = "Enter a username to search.";
+      return;
+    }
+    return searchAnnouncementAccounts(0);
+  };
+  $("announcementPrevious").onclick = () => searchAnnouncementAccounts(Math.max(0, announcementSearchOffset - 50));
+  $("announcementNext").onclick = () => searchAnnouncementAccounts(announcementSearchOffset + 50);
+  $("announcementAccount").onchange = () => {
+    const value = $("announcementAccount").value;
+    announcementAccount = value === "" ? null : announcementAccounts[Number(value)];
+    clearAnnouncementSessions();
+  };
+  $("announcementSessionsButton").onclick = () => loadAnnouncementSessions();
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && location.hash === "#announcements") loadAnnouncements();
+  });
+  window.addEventListener("monitor-app-resume", () => {
+    if (location.hash === "#announcements") loadAnnouncements();
+  });
+  setInterval(() => {
+    if (!document.hidden && location.hash === "#announcements") loadAnnouncements();
+  }, 30000);
+  $("announcementAcknowledge").hidden = !announcementCreateUncertain;
+  $("announcementAcknowledge").disabled = true;
+  resetAnnouncement();
   let logsOffset = 0, logsHasMore = false, logsCutoff = "", logsBusy = false;
   let thresholdBusy = false, thresholdEnvironment = "", thresholdLoad = 0;
   let commandMode = false, clearScope = null, commandBusy = false;
