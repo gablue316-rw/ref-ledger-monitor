@@ -222,6 +222,7 @@
     try {
       if (!navigator.locks) throw Error("Exclusive command locking is unavailable. Update the WebView.");
       let confirmed = false;
+      let completionMessage = "";
       await navigator.locks.request("announcement-atlas-command", async () => {
         if (localStorage.getItem(announcementPendingKey) !== JSON.stringify(atlasPending))
           throw Error("Saved command changed in another tab. Reload and reconcile it.");
@@ -241,6 +242,15 @@
           saveAtlasPending(null);
           showAtlasCommand(`${label} command ${command.requestId}${status.reason ? `: ${status.reason}` : "."}`, source);
           confirmed = status.outcome === "success";
+          if (confirmed && command.type === "bulk-clear") {
+            const results = status.result?.results ?? [];
+            const cleared = results.filter((row) => row.outcome === "cleared").length;
+            const skipped = results.length - cleared;
+            completionMessage = `Cleared ${cleared} of ${results.length} selected banners.` +
+              (skipped ? ` Skipped ${skipped} banners that were no longer clearable.` : "");
+            bulkClearOutcomes = new Map(results.map((row) => [row.id, row.outcome]));
+            selectedAnnouncementIds.clear();
+          }
         } else if (status.state === "pending" || status.state === "processing") {
           showAtlasCommand(`Pending command ${command.requestId} (${status.state}).`);
         } else {
@@ -249,7 +259,7 @@
       });
       if (confirmed) {
         resetAnnouncement();
-        await loadAnnouncements("", true);
+        await loadAnnouncements(completionMessage, true);
       }
     } catch (error) {
       showAtlasCommand(`Unresolved command ${command.requestId}: ${error.message}. Check or resubmit the same command.`);
@@ -257,6 +267,7 @@
       atlasCommandBusy = false;
       $("announcementCommandCheck").disabled = false;
       $("announcementCommandRetry").disabled = false;
+      updateBulkClear();
     }
   }
   async function submitAtlasMutation(type, fields, source) {
@@ -421,6 +432,33 @@
       $("announcementSessionStatus").textContent = `Session status unknown: ${error.message}`;
     }
   }
+  const announcementPageSize = 25;
+  const selectedAnnouncementIds = new Set();
+  let announcementType = "all", announcementTablePage = 0, announcementRows = [];
+  let bulkClearOutcomes = new Map();
+  function announcementStatus(item) {
+    return item.status || (item.cleared ? "cleared"
+      : Date.parse(item.endsAt) <= Date.now() ? "expired"
+      : Date.parse(item.startsAt) > Date.now() ? "scheduled" : "active");
+  }
+  function clearableAnnouncement(item) {
+    return ["active", "scheduled"].includes(announcementStatus(item));
+  }
+  function updateBulkClear() {
+    $("announcementBulkClear").disabled = announcementMode?.mode !== "atlas" ||
+      announcementBusy || !!atlasPending || selectedAnnouncementIds.size === 0;
+  }
+  function renderAnnouncementTable() {
+    const first = announcementTablePage * announcementPageSize;
+    const items = announcementRows.slice(first, first + announcementPageSize);
+    $("announcementList").replaceChildren();
+    for (const item of items) renderAnnouncement(item);
+    $("announcementPagePrevious").disabled = first === 0;
+    $("announcementPageNext").disabled = first + items.length >= announcementRows.length;
+    $("announcementPageStatus").textContent = items.length
+      ? `${first + 1}–${first + items.length} of ${announcementRows.length}` : "0 banners";
+    updateBulkClear();
+  }
   async function loadAnnouncements(message = "", afterWrite = false) {
     if ((announcementBusy || announcementReading) && !afterWrite) return;
     announcementReading++;
@@ -430,88 +468,129 @@
     try {
       const mode = await ensureAnnouncementMode();
       if (atlasPending && !atlasCommandBusy) checkAtlasCommand();
-      const historyControl = $("announcementHistoryControl");
-      if (historyControl) historyControl.hidden = mode.mode !== "atlas";
-      const history = mode.mode === "atlas" && $("announcementHistory")?.checked;
       const data = mode.mode === "atlas"
-        ? {announcements: await atlasPages(history ? "history" : "list", {}, "announcements")}
+        ? {announcements: await atlasPages("search", {status: announcementType}, "announcements")}
         : await request(announcementBase);
       if (generation !== announcementLoad) return;
       if (!Array.isArray(data.announcements)) throw Error("Invalid announcement list response.");
-      $("announcementList").replaceChildren();
-      const title = $("announcementListTitle");
-      if (title) title.textContent = history ? "Cleared & expired" : "Active & scheduled";
-      for (const item of data.announcements) renderAnnouncement(item, history);
+      announcementRows = mode.mode === "atlas" || announcementType === "all" ? data.announcements
+        : data.announcements.filter((item) => announcementStatus(item) === announcementType);
+      const clearableIds = new Set(announcementRows.filter(clearableAnnouncement).map((item) => item.id));
+      for (const id of selectedAnnouncementIds) if (!clearableIds.has(id)) selectedAnnouncementIds.delete(id);
+      announcementTablePage = Math.min(announcementTablePage,
+        Math.max(0, Math.ceil(announcementRows.length / announcementPageSize) - 1));
+      renderAnnouncementTable();
       $("announcementListStatus").textContent = (message ||
-        (data.announcements.length ? `${data.announcements.length} announcement(s) loaded.` : history ? "No cleared or expired announcements." : "No active or scheduled announcements.")) +
+        (announcementRows.length ? `${announcementRows.length} announcement(s) loaded.` : "No matching announcements.")) +
         (announcementCreateUncertain ? " Review the refreshed list and acknowledge it before publishing again." : "");
       if (announcementCreateUncertain) $("announcementAcknowledge").disabled = false;
     } catch (error) {
       if (generation !== announcementLoad) return;
-      $("announcementList").replaceChildren();
+      announcementRows = [];
+      announcementTablePage = 0;
+      selectedAnnouncementIds.clear();
+      renderAnnouncementTable();
       $("announcementListStatus").textContent = `${message ? message + " " : ""}Unable to refresh announcements: ${error.message}`;
     } finally { announcementReading--; }
   }
-  function renderAnnouncement(item, history) {
-    const card = el("article", "", "announcement-card");
-    const scheduled = item.startsAt && Date.parse(item.startsAt) > Date.now();
-    card.append(el("strong", history ? (item.cleared ? "Cleared" : "Expired") : scheduled ? "Scheduled" : "Active"),
-      el("p", item.message || "", "announcement-message"),
-      el("p", `Audience: ${item.audience || "unknown"}`),
-      el("p", item.audience === "system" ? "Target: everyone" :
-        `Target: ${item.username || "unknown"} · tenant ${item.tenantId || "unknown"} · user ${item.userId || "unknown"}${item.audience === "session" ? ` · session target ${item.sessionTargetId || "unknown"}` : ""}`),
-      el("p", `Start: ${item.startsAt || "now"} · End: ${item.endsAt || "no expiration"} · Timezone: ${item.timezone || "not specified"}`));
-    if (history) {
-      const remove = el("button", "Delete permanently", "btn");
-      remove.type = "button";
-      remove.onclick = async () => {
+  function announcementIcon(symbol, label, handler) {
+    const button = el("button", symbol, "btn");
+    button.type = "button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.onclick = handler;
+    return button;
+  }
+  function renderAnnouncement(item) {
+    const row = el("tr", "");
+    const selection = el("td", "");
+    const checkbox = el("input", "");
+    checkbox.type = "checkbox";
+    checkbox.setAttribute("aria-label", `Select banner: ${item.message || item.id}`);
+    const status = announcementStatus(item);
+    const clearable = clearableAnnouncement(item);
+    checkbox.disabled = !clearable || announcementMode?.mode !== "atlas";
+    checkbox.checked = selectedAnnouncementIds.has(item.id);
+    checkbox.onchange = () => {
+      if (checkbox.checked) selectedAnnouncementIds.add(item.id);
+      else selectedAnnouncementIds.delete(item.id);
+      updateBulkClear();
+    };
+    selection.append(checkbox);
+    const target = item.audience === "system" ? "Everyone"
+      : `${item.username || "Unknown user"} · ${item.tenantId || "Unknown account"}${item.audience === "session" ? ` · ${item.sessionTargetId || "Unknown session"}` : ""}`;
+    const targetCell = el("td", target);
+    if (item.audience === "session") {
+      const sessionStatus = el("p", "Session status: not checked.");
+      const check = announcementIcon("Check session status", "Check session status", async () => {
+        check.disabled = true;
+        try {
+          const sessions = await verifiedAnnouncementSessions(item);
+          sessionStatus.textContent = sessions.some((session) => session.sessionTargetId === item.sessionTargetId)
+            ? "Session status: active at last check." : "Session status: ended or expired.";
+        } catch (error) { sessionStatus.textContent = `Session status unknown: ${error.message}`; }
+        finally { check.disabled = false; }
+      });
+      targetCell.append(sessionStatus, check);
+    }
+    const state = el("td", status.charAt(0).toUpperCase() + status.slice(1));
+    if (bulkClearOutcomes.has(item.id)) state.append(el("div", bulkClearOutcomes.get(item.id) === "cleared"
+      ? "Bulk clear: cleared" : "Bulk clear: no longer clearable", "small"));
+    const actions = el("td", "");
+    const buttons = el("div", "", "toolbar");
+    if (clearable) {
+      buttons.append(announcementIcon("✎", "Edit", async () => {
+        try {
+          const mode = await ensureAnnouncementMode();
+          const detail = mode.mode === "atlas" ? await atlasRead("detail", {announcementId: item.id}) : item;
+          if (!detail || detail.id !== item.id) throw Error("Invalid announcement detail response.");
+          editAnnouncement(detail);
+        } catch (error) { $("announcementFormStatus").textContent = `Unable to load detail: ${error.message}`; }
+      }), announcementIcon("×", "Clear Banner", () => clearAnnouncement(item)));
+    } else if (announcementMode?.mode === "atlas") {
+      const remove = announcementIcon("🗑", "Delete permanently", async () => {
         if (announcementBusy || !confirm("Permanently delete this announcement? This cannot be undone.")) return;
         announcementBusy = true;
         remove.disabled = true;
         try { await submitAtlasMutation("delete", {announcementId: item.id}); }
         catch (error) { $("announcementListStatus").textContent = error.message; }
-        finally { announcementBusy = false; remove.disabled = false; }
-      };
-      card.append(remove);
-      $("announcementList").append(card);
+        finally { announcementBusy = false; remove.disabled = false; updateBulkClear(); }
+      });
+      buttons.append(remove);
+    }
+    actions.append(buttons);
+    row.append(selection, el("td", item.message || "", "announcement-message"), state, targetCell,
+      el("td", `${item.startsAt || "Immediate"} → ${item.endsAt || "No expiration"}${item.timezone ? ` · ${item.timezone}` : ""}`), actions);
+    $("announcementList").append(row);
+  }
+  $("announcementSearchType").onclick = () => {
+    announcementType = $("announcementType").value;
+    announcementTablePage = 0;
+    selectedAnnouncementIds.clear();
+    bulkClearOutcomes.clear();
+    return loadAnnouncements("", true);
+  };
+  $("announcementPagePrevious").onclick = () => {
+    if (announcementTablePage > 0) announcementTablePage--;
+    renderAnnouncementTable();
+  };
+  $("announcementPageNext").onclick = () => {
+    if ((announcementTablePage + 1) * announcementPageSize < announcementRows.length) announcementTablePage++;
+    renderAnnouncementTable();
+  };
+  $("announcementBulkClear").onclick = async () => {
+    if (announcementBusy || atlasPending || selectedAnnouncementIds.size === 0) return;
+    if (selectedAnnouncementIds.size > 100) {
+      $("announcementListStatus").textContent = "Select at most 100 banners per request.";
       return;
     }
-    if (item.audience === "session") {
-      const status = el("p", "Session status: not checked.");
-      const check = el("button", "Check session status", "btn");
-      check.type = "button";
-      check.onclick = async () => {
-        check.disabled = true;
-        status.textContent = "Checking session status…";
-        try {
-          const sessions = await verifiedAnnouncementSessions(item);
-          status.textContent = sessions.some((s) => s.sessionTargetId === item.sessionTargetId)
-            ? "Session status: active at last check."
-            : "Session status: not in the active session list (may have ended or expired).";
-        } catch (error) {
-          status.textContent = `Session status unknown: ${error.message}`;
-        } finally { check.disabled = false; }
-      };
-      card.append(status, check);
-    }
-    const actions = el("div", "", "toolbar");
-    const edit = el("button", "Edit", "btn");
-    edit.type = "button";
-    edit.onclick = async () => {
-      try {
-        const mode = await ensureAnnouncementMode();
-        const detail = mode.mode === "atlas" ? await atlasRead("detail", {announcementId: item.id}) : item;
-        if (!detail || detail.id !== item.id) throw Error("Invalid announcement detail response.");
-        editAnnouncement(detail);
-      } catch (error) { $("announcementFormStatus").textContent = `Unable to load detail: ${error.message}`; }
-    };
-    const clear = el("button", "Clear Banner", "btn");
-    clear.type = "button";
-    clear.onclick = () => clearAnnouncement(item);
-    actions.append(edit, clear);
-    card.append(actions);
-    $("announcementList").append(card);
-  }
+    if (!confirm(`Clear ${selectedAnnouncementIds.size} selected banners?`)) return;
+    announcementBusy = true;
+    updateBulkClear();
+    try { await submitAtlasMutation("bulk-clear", {announcementIds: [...selectedAnnouncementIds]}); }
+    catch (error) { $("announcementListStatus").textContent = error.message; }
+    finally { announcementBusy = false; updateBulkClear(); }
+  };
   function editAnnouncement(item) {
     if (announcementBusy) return;
     resetAnnouncement();
@@ -685,7 +764,6 @@
     $("announcementAcknowledge").disabled = true;
     $("announcementFormStatus").textContent = "List reviewed. You may publish again.";
   };
-  if ($("announcementHistory")) $("announcementHistory").onchange = () => loadAnnouncements("", true);
   $("announcementRefresh").onclick = () => loadAnnouncements();
   $("announcementAudience").onchange = announcementAudienceChanged;
   $("announcementSearchButton").onclick = () => {

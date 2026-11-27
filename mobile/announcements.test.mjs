@@ -17,6 +17,7 @@ function fixture(handler, stored = {}, mode = {mode: "http"}, persistent = {}) {
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
     focus() {}
+    setAttribute(name, value) { this[name] = value; }
     reset() {
       for (const id of ["announcementMessage", "announcementSearch", "announcementStart", "announcementEnd"]) get(id).value = "";
       get("announcementAudience").value = "system";
@@ -133,8 +134,8 @@ test("several announcements render as text and session lookup errors remain unkn
   const cards = f.get("announcementList").children;
   assert.equal(cards.length, 2);
   assert.equal(cards[0].children[1].textContent, item.message);
-  await cards[0].children[6].onclick();
-  assert.match(cards[0].children[5].textContent, /status unknown/);
+  await cards[0].children[3].children[1].onclick();
+  assert.match(cards[0].children[3].children[0].textContent, /status unknown/);
   f.events.visibilitychange();
   f.windowEvents["monitor-app-resume"]();
   await new Promise(setImmediate);
@@ -250,7 +251,7 @@ test("Atlas paginates lists, accounts and sessions using new command IDs and sta
     }
     const command = commands.get(path.slice(commandPath.length + 1));
     let result;
-    if (command.type === "list") result = command.after
+    if (command.type === "search") result = command.after
       ? {announcements: [{...item, id: "announcement-2"}], nextCursor: ""}
       : {announcements: [item], nextCursor: "list-cursor"};
     else if (command.type === "accounts") result = command.after
@@ -265,7 +266,7 @@ test("Atlas paginates lists, accounts and sessions using new command IDs and sta
   }, {}, atlasMode);
   await f.api.loadAnnouncements();
   assert.equal(f.get("announcementList").children.length, 2);
-  await f.get("announcementList").children[0].children[5].children[0].onclick();
+  await f.get("announcementList").children[0].children[5].children[0].children[0].onclick();
   assert.equal(f.get("announcementMessage").value, "first");
   await selectAccount(f);
   await f.api.loadAnnouncementSessions();
@@ -363,7 +364,7 @@ test("Atlas mutations are only confirmed after completed success and edits inclu
       return {};
     }
     const command = commands.get(path.slice(commandPath.length + 1));
-    return command.type === "list"
+    return command.type === "search"
       ? {requestId: command.requestId, state: "completed", outcome: "success", result: {announcements: [], nextCursor: ""}}
       : {requestId: command.requestId, state, outcome: state === "completed" ? "success" : "", result: {}};
   }, {}, atlasMode, persistent);
@@ -412,4 +413,66 @@ test("HTTP 202 is not treated as a confirmed mutation", async () => {
   await assert.rejects(context.request("api/admin/announcements", {method: "POST", rejectAccepted: true}), /not confirmed/);
   await assert.rejects(context.post("api/admin/announcements/id/clear", {}, undefined, true), /not confirmed/);
   await context.post(commandPath, {});
+});
+
+test("search retains its filter after one bulk clear and only inactive rows can be deleted", async () => {
+  const commands = new Map();
+  const entries = [
+    {id: "active-1", status: "active", audience: "system"},
+    {id: "scheduled-2", status: "scheduled", audience: "system"},
+    {id: "active-3", status: "active", audience: "system"},
+    {id: "expired-4", status: "expired", audience: "system"},
+    {id: "cleared-5", status: "cleared", audience: "system"},
+  ];
+  const f = fixture(async (path, options) => {
+    if (path === commandPath) {
+      commands.set(options.payload.requestId, options.payload);
+      return {};
+    }
+    const command = commands.get(path.slice(commandPath.length + 1));
+    let result;
+    if (command.type === "search") {
+      result = {announcements: entries.filter((row) => command.status === "all" || command.status === row.status), nextCursor: ""};
+    } else if (command.type === "bulk-clear") {
+      result = {results: command.announcementIds.map((id) => {
+        entries.find((row) => row.id === id).status = "cleared";
+        return {id, outcome: "cleared"};
+      })};
+    } else if (command.type === "delete") {
+      entries.splice(entries.findIndex((row) => row.id === command.announcementId), 1);
+      result = {id: command.announcementId};
+    } else throw Error("Unexpected command");
+    return {requestId: command.requestId, state: "completed", outcome: "success", result};
+  }, {}, atlasMode);
+  for (const status of ["active", "scheduled", "cleared", "expired", "all"]) {
+    f.get("announcementType").value = status;
+    await f.get("announcementSearchType").onclick();
+    assert.equal(f.get("announcementList").children.length, entries.filter((row) => status === "all" || row.status === status).length);
+  }
+  const before = f.get("announcementList").children;
+  for (const row of before.slice(0, 2)) {
+    row.children[0].children[0].checked = true;
+    row.children[0].children[0].onchange();
+  }
+  assert.equal(before[3].children[0].children[0].disabled, true);
+  assert.equal(before[0].children[5].children[0].children.some((button) => button.title === "Delete permanently"), false);
+  await f.get("announcementBulkClear").onclick();
+  const bulk = [...commands.values()].filter((command) => command.type === "bulk-clear");
+  assert.equal(bulk.length, 1);
+  assert.equal(JSON.stringify(bulk[0].announcementIds), JSON.stringify(["active-1", "scheduled-2"]));
+  assert.match(f.get("announcementListStatus").textContent, /Cleared 2 of 2/);
+  assert.equal(entries.find((row) => row.id === "active-3").status, "active");
+  f.get("announcementType").value = "expired";
+  await f.get("announcementSearchType").onclick();
+  const expired = f.get("announcementList").children[0];
+  await expired.children[5].children[0].children[0].onclick();
+  f.get("announcementType").value = "cleared";
+  await f.get("announcementSearchType").onclick();
+  for (let count = 0; count < 3; count++) {
+    await f.get("announcementList").children[0].children[5].children[0].children[0].onclick();
+  }
+  await f.get("announcementRefresh").onclick();
+  assert.equal(f.get("announcementList").children.length, 0);
+  assert.equal(entries.length, 1);
+  assert.equal([...commands.values()].at(-1).status, "cleared");
 });
